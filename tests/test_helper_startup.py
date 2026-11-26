@@ -1,0 +1,60 @@
+import subprocess, tempfile, unittest, os, time, shlex
+from pathlib import Path
+from unittest.mock import patch
+import system_proxy as sp
+
+class HelperStartupTest(unittest.TestCase):
+    def run_helper(self, script):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); executable=root/'fake helper'
+            executable.write_text('#!/bin/sh\n'+script+'\n'); executable.chmod(0o700)
+            command=sp.startup_command(executable,os.getpid(),os.getpid(),9090)
+            # The macOS script is exercised against a harmless fake helper, never real network settings.
+            command=command.replace('/private/tmp/mapremote.XXXXXXXX',str(root/'mapremote.XXXXXXXX'))
+            return subprocess.run(['/bin/sh','-c',command],capture_output=True,text=True,timeout=5)
+    def test_success(self):
+        result=self.run_helper('printf OK > "$5"; sleep 0.3')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout,'OK')
+    def test_early_exit_diagnostics(self):
+        result=self.run_helper('echo "configuration denied" >&2; exit 7')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('status 7',result.stderr)
+        self.assertIn('configuration denied',result.stderr)
+    def test_structured_error(self):
+        result=self.run_helper('printf "ERROR: invalid session" > "$5"; sleep 0.3')
+        self.assertEqual(result.stdout,'ERROR: invalid session')
+        with patch.object(sp,'helper',return_value=Path('/fake')),patch.object(sp,'admin',return_value=result.stdout):
+            with self.assertRaisesRegex(ValueError,'invalid session'): sp.enable(123,9090)
+    def test_timeout_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory); executable=root/'fake'; executable.write_text('#!/bin/sh\necho "locking preferences" >&2\nsleep 1\n'); executable.chmod(0o700)
+            cmd=sp.startup_command(executable,1,2,9090).replace('/private/tmp/mapremote.XXXXXXXX',str(root/'mapremote.XXXXXXXX')).replace('-lt 400','-lt 2')
+            result=subprocess.run(['/bin/sh','-c',cmd],capture_output=True,text=True,timeout=4)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('locking preferences',result.stderr)
+            self.assertIn('did not become ready',result.stderr)
+
+    def test_no_external_nohup_and_survives_hangup(self):
+        cmd = sp.startup_command(Path('/fake'), 1, 2, 9090)
+        self.assertNotIn('/usr/bin/nohup ', cmd)
+        result = self.run_helper('kill -HUP $$; printf OK > "$5"; sleep 0.3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'OK')
+
+    def test_helper_continues_after_launcher_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / 'fake helper'
+            marker = root / 'finished'
+            executable.write_text('#!/bin/sh\nprintf OK > "$5"\nsleep 0.7\nprintf survived > ' + shlex.quote(str(marker)) + '\n')
+            executable.chmod(0o700)
+            cmd = sp.startup_command(executable, os.getpid(), os.getpid(), 9090)
+            cmd = cmd.replace('/private/tmp/mapremote.XXXXXXXX', str(root / 'mapremote.XXXXXXXX'))
+            result = subprocess.run(['/bin/sh', '-c', cmd], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, start_new_session=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, 'OK')
+            deadline = time.monotonic() + 3
+            while not marker.exists() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(marker.read_text(), 'survived')
