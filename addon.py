@@ -11,7 +11,7 @@ class MapRemoteCustomAddon:
         self.stamp = None
         self.config = {'enabled':False,'rules':[]}
 
-    def requestheaders(self, flow: http.HTTPFlow):
+    def refresh_config(self):
         # Keep the last good atomic configuration; do not log requests.
         try:
             st = self.path.stat()
@@ -20,6 +20,16 @@ class MapRemoteCustomAddon:
                 self.config = rules.load(self.path); self.stamp = stamp
         except (OSError, ValueError, TypeError):
             pass
+    def tls_clienthello(self, data):
+        # In regular proxy mode the CONNECT authority is the routing target.
+        # Unrelated TLS must remain end-to-end (including pinned certificates).
+        self.refresh_config()
+        address = data.context.server.address
+        if not address or not rules.needs_https_interception(self.config, address[0], address[1]):
+            data.ignore_connection = True
+
+    def requestheaders(self, flow: http.HTTPFlow):
+        self.refresh_config()
         try:
             result = rules.map_url(self.config, flow.request.url, flow.request.method)
         except ValueError:

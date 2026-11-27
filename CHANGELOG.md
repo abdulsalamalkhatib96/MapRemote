@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- Adopt stale matching loopback proxy settings automatically and disable them on Stop instead of restoring an abandoned listener.
+- Restore HTTP/HTTPS and other network settings independently; refuse to overwrite unrelated active proxy configurations.
+- Tunnel TLS outside enabled HTTPS mapping authorities without interception or CA trust requirements; reload scope from rules on each new TLS connection.
+- Add regression coverage for TLS scope and end-to-end passthrough.
+
 ## 3.0.1
 - Independently sign the native privileged helper before embedding it in Contents/Helpers.
 - Verify the helper before and after copying to a fresh root-owned staging directory; report signature and SIGKILL diagnostics.

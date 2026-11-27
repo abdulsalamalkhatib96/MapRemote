@@ -26,3 +26,24 @@ class AddonRegistrationTest(unittest.TestCase):
             self.assertFalse(callable(getattr(module, hook, None)), hook)
         self.assertTrue(callable(module.addons[0].requestheaders))
 
+    def test_tls_passthrough_and_live_scope(self):
+        fake = types.ModuleType('mitmproxy')
+        fake.http = types.SimpleNamespace(HTTPFlow=object)
+        spec = importlib.util.spec_from_file_location('mapremote_scope_test', Path(__file__).resolve().parents[1] / 'addon.py')
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {'mitmproxy': fake}), patch.dict(os.environ, {'MAPREMOTE_RULES': '/tmp/mapremote-test-rules.json'}):
+            spec.loader.exec_module(module)
+        addon = module.addons[0]
+        def hello(host, port=443):
+            return types.SimpleNamespace(context=types.SimpleNamespace(server=types.SimpleNamespace(address=(host,port))),ignore_connection=False)
+        with patch.object(addon, 'refresh_config'):
+            addon.config = {'enabled': True, 'rules': [{'enabled': True, 'source': 'https://api.example.com/v1'}]}
+            for host, expected in [('api.example.com', False), ('www.example.com', True)]:
+                event = hello(host)
+                addon.tls_clienthello(event)
+                self.assertEqual(event.ignore_connection, expected)
+            addon.config['enabled'] = False
+            event = hello('api.example.com')
+            addon.tls_clienthello(event)
+            self.assertTrue(event.ignore_connection)
+

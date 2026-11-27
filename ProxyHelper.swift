@@ -38,6 +38,25 @@ func subset(_ d: [String: Any]) -> [String: Any] { d.filter { keys.contains($0.k
 func equal(_ a: [String: Any], _ b: [String: Any]) -> Bool { NSDictionary(dictionary: a).isEqual(to: b) }
 func config(_ proto: SCNetworkProtocol) -> [String: Any] { SCNetworkProtocolGetConfiguration(proto) as? [String: Any] ?? [:] }
 func proxy(_ service: SCNetworkService) -> SCNetworkProtocol? { SCNetworkServiceCopyProtocol(service, kSCNetworkProtocolTypeProxies) }
+// Restore coherent groups independently. An unrelated edit (for example a
+// bypass-list change) must not leave an abandoned HTTP/HTTPS proxy enabled.
+let proxyGroups = [
+    ["HTTPEnable", "HTTPProxy", "HTTPPort"],
+    ["HTTPSEnable", "HTTPSProxy", "HTTPSPort"],
+    ["ProxyAutoConfigEnable"], ["ProxyAutoDiscoveryEnable"], ["SOCKSEnable"],
+    ["ExceptionsList"]
+]
+func group(_ d: [String: Any], _ names: [String]) -> [String: Any] {
+    d.filter { names.contains($0.key) }
+}
+func isEnabled(_ d: [String: Any], _ key: String) -> Bool {
+    (d[key] as? NSNumber)?.boolValue == true
+}
+func matchesListener(_ d: [String: Any], _ prefix: String, _ port: Int) -> Bool {
+    isEnabled(d, prefix + "Enable") &&
+        (d[prefix + "Proxy"] as? String) == "127.0.0.1" &&
+        (d[prefix + "Port"] as? NSNumber)?.intValue == port
+}
 func restore() throws {
     guard FileManager.default.fileExists(atPath: journal.path) else { return }
     let rows = try load()
@@ -46,11 +65,14 @@ func restore() throws {
             guard let id = row["id"] as? String, let before = row["before"] as? [String: Any], let after = row["after"] as? [String: Any] else { throw Failure("Invalid journal entry") }
             guard let service = SCNetworkServiceCopy(p, id as CFString), let proto = proxy(service) else { continue }
             var current = config(proto)
-            // Do not overwrite a proxy configuration changed independently while running.
-            if !equal(subset(current), after) { continue }
-            for key in keys { current.removeValue(forKey: key) }
-            for (key, value) in before { current[key] = value }
-            try require(SCNetworkProtocolSetConfiguration(proto, current as CFDictionary), "Cannot restore service \(id)")
+            let original = current
+            for names in proxyGroups where equal(group(current, names), group(after, names)) {
+                for key in names { current.removeValue(forKey: key) }
+                for (key, value) in group(before, names) { current[key] = value }
+            }
+            if !equal(original, current) {
+                try require(SCNetworkProtocolSetConfiguration(proto, current as CFDictionary), "Cannot restore service \(id)")
+            }
         }
         try require(SCPreferencesCommitChanges(p), "Cannot commit restore")
         try require(SCPreferencesApplyChanges(p), "Cannot apply restore")
@@ -63,16 +85,31 @@ func apply(_ port: Int, sessionValid: () -> Bool) throws {
         var rows = [[String: Any]](); var changes = [(SCNetworkProtocol, [String: Any])]()
         for service in services where SCNetworkServiceGetEnabled(service) {
             guard let iface = SCNetworkServiceGetInterface(service), let type = SCNetworkInterfaceGetInterfaceType(iface) as String?, ["Ethernet", "IEEE80211"].contains(type), let proto = proxy(service), SCNetworkProtocolGetEnabled(proto), let id = SCNetworkServiceGetServiceID(service) as String? else { continue }
-            let old = config(proto); var next = old
-            // Do not silently replace a pre-existing manual MapRemote configuration.
-            if (old["HTTPEnable"] as? NSNumber)?.boolValue == true && old["HTTPProxy"] as? String == "127.0.0.1" && (old["HTTPPort"] as? NSNumber)?.intValue == port { throw Failure("A matching manual proxy is already enabled. Disable the old manual HTTP/HTTPS settings once, then retry.") }
+            let old = config(proto)
+            var baseline = old
+            // The controller verified this loopback listener was free before
+            // starting its engine. A matching enabled entry would otherwise
+            // be restored to a dead listener on Stop. Adopt it automatically.
+            for prefix in ["HTTP", "HTTPS"] {
+                if matchesListener(old, prefix, port) {
+                    baseline[prefix + "Enable"] = 0
+                    phase("Adopting stale loopback \(prefix) proxy for service \(id)")
+                } else if isEnabled(old, prefix + "Enable") {
+                    throw Failure("Another manual \(prefix) proxy is enabled. MapRemote will not replace a different proxy; close the other proxy app or use an explicit proxy client.")
+                }
+            }
+            // Do not silently bypass a managed corporate PAC/SOCKS proxy.
+            if ["ProxyAutoConfigEnable", "ProxyAutoDiscoveryEnable", "SOCKSEnable"].contains(where: { isEnabled(old, $0) }) {
+                throw Failure("An existing PAC, automatic discovery or SOCKS proxy is enabled. MapRemote will not override it.")
+            }
+            var next = baseline
             next["HTTPEnable"] = 1; next["HTTPProxy"] = "127.0.0.1"; next["HTTPPort"] = port
             next["HTTPSEnable"] = 1; next["HTTPSProxy"] = "127.0.0.1"; next["HTTPSPort"] = port
             next["ProxyAutoConfigEnable"] = 0; next["ProxyAutoDiscoveryEnable"] = 0; next["SOCKSEnable"] = 0
             var exceptions = old["ExceptionsList"] as? [String] ?? []
             for host in ["localhost", "127.0.0.1", "::1"] where !exceptions.contains(host) { exceptions.append(host) }
             next["ExceptionsList"] = exceptions
-            rows.append(["id": id, "before": subset(old), "after": subset(next)])
+            rows.append(["id": id, "before": subset(baseline), "after": subset(next)])
             changes.append((proto, next))
         }
         guard !rows.isEmpty else { throw Failure("No enabled Wi-Fi or Ethernet service with proxy configuration was found") }

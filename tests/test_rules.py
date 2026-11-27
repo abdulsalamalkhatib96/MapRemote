@@ -1,6 +1,6 @@
 import unittest, tempfile
 from pathlib import Path
-from rules import normalize, map_url, save, load
+from rules import normalize, map_url, save, load, needs_https_interception
 
 def rule(source='https://api.example.com/v1',destination='http://127.0.0.1:8000/api',**kw):
     return dict(name='',enabled=True,source=source,destination=destination,method='*',match='prefix',query='preserve',preserve_host=False)|kw
@@ -20,6 +20,16 @@ class RulesTest(unittest.TestCase):
         self.assertIsNotNone(map_url(c,'https://x.example.com/test','GET'))
         self.assertIsNone(map_url(c,'https://example.com/test','GET'))
         self.assertIsNone(map_url(c,'https://badexample.com/test','GET'))
+    def test_tls_scope(self):
+        c = cfg(rule(source='https://*.example.com:8443/api'), rule(source='http://plain.example.net'), rule(source='https://disabled.example.net', enabled=False))
+        self.assertTrue(needs_https_interception(c, 'API.EXAMPLE.COM', 8443))
+        for host, port in [('example.com',8443), ('badexample.com',8443), ('api.example.com',443), ('plain.example.net',443), ('disabled.example.net',443), ('google.com',443)]:
+            with self.subTest(host=host,port=port):
+                self.assertFalse(needs_https_interception(c,host,port))
+        self.assertFalse(needs_https_interception(cfg(rule(),enabled=False),'api.example.com',443))
+        self.assertTrue(needs_https_interception(cfg(rule()),'api.example.com',443))
+        self.assertFalse(needs_https_interception(cfg(),'api.example.com',443))
+
     def test_query(self): self.assertEqual(map_url(cfg(rule(destination='http://localhost:8000/a?b=2',query='replace')),'https://api.example.com/v1?a=1','GET')[0],'http://localhost:8000/a?b=2')
     def test_port_scheme(self):
         self.assertIsNone(map_url(cfg(rule()),'https://api.example.com:444/v1','GET'))

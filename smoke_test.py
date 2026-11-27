@@ -38,6 +38,15 @@ def main():
         root = Path(folder)
         config = root / 'rules.json'
         rules.save(config, {'enabled': True, 'port': port, 'rules': [{'enabled': True, 'name': 'smoke', 'source': 'http://mapremote-smoke.invalid/api', 'destination': f'http://127.0.0.1:{target.server_port}/local', 'method': '*', 'match': 'prefix', 'query': 'preserve', 'preserve_host': False}]})
+        # An unrelated HTTPS origin must present its own certificate, not the
+        # MapRemote CA. Use a local origin so CI does not depend on Internet/DNS.
+        cert = root / 'origin.pem'
+        key = root / 'origin.key'
+        openssl_config = root / 'origin.cnf'
+        openssl_config.write_text('[req]\ndistinguished_name=dn\nx509_extensions=ext\nprompt=no\n[dn]\nCN=127.0.0.1\n[ext]\nsubjectAltName=IP:127.0.0.1\n')
+        subprocess.run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-days','1','-keyout',str(key),'-out',str(cert),'-config',str(openssl_config)],check=True,capture_output=True)
+        origin_tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        origin_tls.load_cert_chain(cert,key)
         cfg = rules.load(config)
         https_rule = dict(cfg['rules'][0], name='https-smoke', source='https://mapremote-smoke.invalid/api')
         cfg['rules'].append(https_rule)
@@ -76,6 +85,23 @@ def main():
                         raise RuntimeError(f'Unexpected HTTPS response: {response.status}, {body[:200]!r}')
                 finally: conn.close()
                 print('PASS: HTTPS CONNECT, temporary CA verification and HTTPS-to-HTTP mapping.')
+                with ThreadingHTTPServer(('127.0.0.1',0),Target) as tls_target:
+                    tls_target.socket = origin_tls.wrap_socket(tls_target.socket,server_side=True)
+                    threading.Thread(target=tls_target.serve_forever,daemon=True).start()
+                    try:
+                        # Trust ONLY the origin certificate: MITM interception
+                        # would fail verification, even if the response was OK.
+                        origin_context = ssl.create_default_context(cafile=str(cert))
+                        conn = http.client.HTTPSConnection('127.0.0.1',port,timeout=10,context=origin_context)
+                        conn.set_tunnel('127.0.0.1',tls_target.server_port)
+                        try:
+                            conn.request('GET','/unmapped')
+                            response = conn.getresponse()
+                            if response.status != 200 or response.read() != b'/unmapped':
+                                raise RuntimeError('Unmapped TLS forwarding failed')
+                        finally: conn.close()
+                        print('PASS: unrelated HTTPS preserves origin certificate without trusting MapRemote CA.')
+                    finally: tls_target.shutdown()
             except (RuntimeError, OSError, http.client.HTTPException) as exc:
                 print(f'FAIL: {exc}', flush=True)
                 raise SystemExit(1) from exc

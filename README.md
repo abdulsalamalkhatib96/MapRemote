@@ -76,7 +76,7 @@ The build downloads a pinned redistributable CPython archive from [Python Build 
 ### First run
 
 1. Quit other debugging proxies and stop any manually launched `mitmdump` process.
-2. If an earlier MapRemote v1 manually configured the same system proxy, disable only that old configuration before starting.
+2. MapRemote automatically adopts an abandoned manual loopback proxy on the configured port; no manual reset is required for that case. A different active proxy or PAC/SOCKS configuration is not overwritten.
 3. Open MapRemote, add a rule, and click **Start proxy**. Approve the administrator prompt.
 4. For HTTPS, click **Install & Trust Certificate** after the CA has been generated. Review and approve the macOS trust prompt; use Keychain Access if interactive trust cannot be granted by the button.
 5. Test your request from a proxy-aware client. Click **Stop** or quit when finished.
@@ -107,7 +107,7 @@ The browser continues requesting the original URL. The local backend must still 
 
 ### Rule semantics
 
-The source scheme, host and effective port must match. Prefix matching respects path segment boundaries (`/api` does not match `/apix`). Wildcards are allowed only at the start of the source hostname and do not match the bare parent domain. Source query matching is not supported. The rule list is evaluated top to bottom and the first enabled matching rule wins. Disable the mapping tool to forward requests unchanged, or stop the proxy to restore system settings.
+HTTPS interception is limited to enabled HTTPS source authorities (hostname and port). Other TLS connections are tunneled without replacing their certificates, including when mapping is disabled. HTTPS paths on a selected authority still require the MapRemote CA; changes to interception scope affect new connections, so reconnect a client after editing rules if necessary. HTTP requests that do not match a rule are forwarded unchanged. The source scheme, host and effective port must match. Prefix matching respects path segment boundaries (`/api` does not match `/apix`). Wildcards are allowed only at the start of the source hostname and do not match the bare parent domain. Source query matching is not supported. The rule list is evaluated top to bottom and the first enabled matching rule wins. Disable the mapping tool to forward requests unchanged, or stop the proxy to restore system settings.
 
 ## Architecture
 
@@ -132,7 +132,7 @@ The proxy listens on `127.0.0.1:9090` by default. The controller uses an ephemer
 └── instance.lock
 ```
 
-The privileged helper stores a root-owned recovery journal at `/private/var/db/com.mapremote.proxy/snapshot.plist`. Do not manually delete it. Enabled Wi-Fi/Ethernet services in the current network location are managed; existing bypass entries are retained, and PAC/WPAD/SOCKS enable flags are temporarily disabled and restored. If a service's managed settings were independently changed, restoration avoids overwriting them. Immediate recovery after power loss or simultaneous supervisor failure is not guaranteed; reopen MapRemote and use **Recover network settings**.
+The privileged helper stores a root-owned recovery journal at `/private/var/db/com.mapremote.proxy/snapshot.plist`. Do not manually delete it. Enabled Wi-Fi/Ethernet services in the current network location are managed; existing bypass entries are retained. Active unrelated manual, PAC/WPAD or SOCKS proxies cause a safe refusal instead of being silently replaced. An abandoned matching loopback proxy is adopted and disabled on Stop rather than restored to a dead listener. Restoration compares coherent proxy-setting groups independently to preserve unrelated edits without leaving HTTP/HTTPS enabled accidentally. Immediate recovery after power loss or simultaneous supervisor failure is not guaranteed; reopen MapRemote and use **Recover network settings**.
 
 ## Testing
 

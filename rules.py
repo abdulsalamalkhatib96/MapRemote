@@ -47,6 +47,25 @@ def normalize(config):
 
 def default_port(s): return 443 if s == 'https' else 80
 
+def needs_https_interception(config, host, port):
+    """TLS cannot see a request path yet: scope interception by source authority."""
+    if not config['enabled'] or not isinstance(host, str):
+        return False
+    host = host.lower().rstrip('.')
+    for r in config['rules']:
+        if not r['enabled']:
+            continue
+        s = urlsplit(r['source'])
+        if s.scheme != 'https' or (s.port or 443) != port:
+            continue
+        pattern = s.hostname.rstrip('.')
+        if pattern.startswith('*.'):
+            if host.endswith(pattern[1:]) and host != pattern[2:]:
+                return True
+        elif host == pattern:
+            return True
+    return False
+
 def map_url(config, url, method):
     if not config['enabled']: return None
     u = urlsplit(url)
