@@ -23,7 +23,11 @@ def main():
         if "--privileged" in sys.argv[2:]:
             sys.dont_write_bytecode = True
             sys.path.insert(0, str(resources))
-            from system_proxy import probe_command
+            from system_proxy import probe_command, pac_command
+            pac = subprocess.run(["/usr/bin/sudo", "-n", "/bin/sh", "-c", pac_command("self-test")], capture_output=True, text=True, timeout=30)
+            if pac.returncode or pac.stdout.strip() != "MapRemote PAC supervisor OK":
+                raise RuntimeError(f"PAC supervisor self-test failed: {pac.returncode}\n{pac.stdout}\n{pac.stderr}")
+            print("PASS: system PAC supervisor executes without network mutation.")
             result = subprocess.run(["/usr/bin/sudo", "-n", "/bin/sh", "-c", probe_command(helper)], capture_output=True, text=True, timeout=30)
             if result.returncode or result.stdout.strip() != "MapRemote ProxyHelper OK":
                 raise RuntimeError(f"Privileged staged helper failed: {result.returncode}\n{result.stdout}\n{result.stderr}")

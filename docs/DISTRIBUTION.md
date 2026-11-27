@@ -6,7 +6,7 @@ MapRemote 3.0 packages CPython 3.12.16 from the pinned Python Build Standalone r
 
 The [distribution workflow](../.github/workflows/distribution.yml) uses macOS 15 Apple Silicon and Intel runners. It tests the relocated application under a path containing spaces with a restricted PATH and temporary HOME; checks signatures; exercises real HTTP and HTTPS mapping using a temporary CA; builds a compressed DMG with an Applications symlink; and uploads checksums. It also executes the independently signed privileged helper as root in its production staging directory using a non-mutating self-test.
 
-Both jobs must succeed before a preview is published. Pushes to main trigger ad-hoc-signed previews, not notarized releases. The manual workflow can produce a signed release only when all Apple Developer credentials are configured. If a release tag already exists, publishing fails rather than silently replacing assets.
+Both jobs must succeed before a preview is published. Ad-hoc previews use the system PAC backend at runtime (Apple's networksetup and system Perl, with administrator approval); the native root executable is reserved for Developer ID builds. A non-mutating PAC supervisor self-test is part of the distribution check. PAC-aware client behavior and real privileged activation/restoration still require a physical Mac test. Pushes to main trigger ad-hoc-signed previews, not notarized releases. The manual workflow can produce a signed release only when all Apple Developer credentials are configured. If a release tag already exists, publishing fails rather than silently replacing assets.
 
 ## Apple Developer ID (owner only)
 

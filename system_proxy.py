@@ -3,6 +3,33 @@ import os, shlex, subprocess, sys, time
 from pathlib import Path
 
 JOURNAL = Path('/private/var/db/com.mapremote.proxy/snapshot.plist')
+PAC_JOURNAL = JOURNAL.with_name('pac-session.json')
+
+def recovery_pending():
+    return JOURNAL.exists() or PAC_JOURNAL.exists()
+
+def developer_signed(executable):
+    result = subprocess.run(['/usr/bin/codesign','-dv','--verbose=4',str(executable)],
+                            capture_output=True, text=True)
+    return result.returncode == 0 and 'Authority=Developer ID Application:' in result.stderr
+
+def pac_command(mode, *args):
+    # Explicit administrator approval for the OS's networksetup interface.
+    # Do not execute an ad-hoc-signed third-party binary as root.
+    if not Path('/usr/bin/perl').is_file():
+        raise ValueError('The macOS system Perl interpreter is unavailable. A Developer ID signed MapRemote build is required.')
+    script = Path(__file__).with_name('pac_supervisor.pl').read_text()
+    return shlex.join(['/usr/bin/env','-i','PATH=/usr/bin:/bin:/usr/sbin:/sbin','LC_ALL=C','TZ=UTC',
+                       '/usr/bin/perl','-e',script,'--',mode,*map(str,args)])
+
+def pac_source(port):
+    port = int(port)
+    if not 1024 <= port <= 65535:
+        raise ValueError('Invalid proxy port.')
+    return ('function FindProxyForURL(url, host) {\n'
+            '  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]") return "DIRECT";\n'
+            f'  return "PROXY 127.0.0.1:{port}; DIRECT";\n'
+            '}\n')
 
 def helper():
     path = Path(__file__).resolve().parent.parent / 'Helpers' / 'ProxyHelper'
@@ -77,17 +104,28 @@ if [ ! -f "$d/ready" ]; then
 fi
 /bin/cat "$d/ready"'''
 
-def enable(pid, port):
-    result = admin(startup_command(helper(), os.getpid(), pid, port))
+def enable(pid, port, *, pac_port=None):
+    executable = helper()
+    if pac_port is not None and not developer_signed(executable):
+        if JOURNAL.exists():
+            raise ValueError('A previous native recovery journal is present. Recover network settings before starting PAC mode.')
+        result = admin(pac_command('run', os.getpid(), pid, port, pac_port))
+        if result != 'OK': raise ValueError(result or 'Could not activate system PAC.')
+        return 'pac'
+    result = admin(startup_command(executable, os.getpid(), pid, port))
     if result != 'OK': raise ValueError(result or 'Could not activate system proxy.')
+    return 'native'
 
 def wait_restore(timeout=12):
     deadline = time.monotonic() + timeout
-    while JOURNAL.exists() and time.monotonic() < deadline: time.sleep(.2)
-    return not JOURNAL.exists()
+    while recovery_pending() and time.monotonic() < deadline: time.sleep(.2)
+    return not recovery_pending()
 
 def recover():
-    admin(stage_command(helper()) + '"$d/ProxyHelper" recover')
+    if PAC_JOURNAL.exists():
+        admin(pac_command('recover'))
+    else:
+        admin(stage_command(helper()) + '"$d/ProxyHelper" recover')
 
 def _security(args):
     result = subprocess.run(['/usr/bin/security', *args], capture_output=True, text=True)

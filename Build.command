@@ -27,7 +27,7 @@ fi
 /usr/bin/codesign --verify --strict --verbose=2 "$TMP/ProxyHelper"
 /usr/bin/ditto "$TMP/ProxyHelper" "$CONTENTS/Helpers/ProxyHelper"
 /usr/bin/xcrun swiftc -swift-version 5 -O -framework AppKit -framework WebKit NativeApp.swift -o "$CONTENTS/MacOS/MapRemote"
-cp app.py addon.py rules.py system_proxy.py index.html engine_entry.py smoke_test.py "$CONTENTS/Resources/"
+cp app.py addon.py rules.py system_proxy.py pac_supervisor.pl index.html engine_entry.py smoke_test.py "$CONTENTS/Resources/"
 cp Info.plist "$CONTENTS/Info.plist"
 bash scripts/build-icon.sh "$CONTENTS/Resources/MapRemote.icns"
 "$BUILD_PYTHON" scripts/bundle-runtime.py "$CONTENTS/Resources/runtime"

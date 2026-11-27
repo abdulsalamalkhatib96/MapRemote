@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Use macOS networksetup and a fail-open local PAC for ad-hoc builds instead of launching an ad-hoc privileged Mach-O helper; retain the native backend for Developer ID builds.
+- Journal and supervise PAC activation, refuse unrelated proxy conflicts, and restore only MapRemote-owned settings.
 - Supervise live proxy responsiveness through an authenticated local HTTP health check; recover after three consecutive failures or unexpected engine exit.
 - Add an independent privileged recovery guard, retry network restoration on temporary errors, and tolerate transient PID identity lookup failures.
 - Preserve unexpected-stop diagnostics and replace stale success messages in the UI; test engine failure recovery state.

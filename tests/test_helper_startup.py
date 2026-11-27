@@ -12,6 +12,16 @@ class HelperStartupTest(unittest.TestCase):
             # The macOS script is exercised against a harmless fake helper, never real network settings.
             command=command.replace('/private/tmp/mapremote.XXXXXXXX',str(root/'mapremote.XXXXXXXX'))
             return subprocess.run(['/bin/sh','-c',command],capture_output=True,text=True,timeout=5)
+    def test_preview_uses_system_pac_not_native_executable(self):
+        with patch.object(sp,'helper',return_value=Path('/fake/ProxyHelper')),patch.object(sp,'developer_signed',return_value=False),patch.object(sp,'JOURNAL',Path('/nonexistent-mapremote-native-journal')),patch.object(sp,'pac_command',return_value='PAC') as pac,patch.object(sp,'admin',return_value='OK') as admin:
+            self.assertEqual(sp.enable(123,9090,pac_port=49152),'pac')
+            pac.assert_called_once_with('run',os.getpid(),123,9090,49152)
+            admin.assert_called_once_with('PAC')
+    def test_pac_fail_open(self):
+        source=sp.pac_source(9090)
+        self.assertIn('PROXY 127.0.0.1:9090; DIRECT',source)
+        self.assertIn('localhost',source)
+        self.assertIn('return "DIRECT"',source)
     def test_production_stage_verifies_both_copies(self):
         cmd=sp.startup_command(Path('/a b/ProxyHelper'),1,2,9090)
         self.assertEqual(cmd.count('/usr/bin/codesign --verify --strict'),2)

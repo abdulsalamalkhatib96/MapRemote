@@ -21,6 +21,7 @@ save(RULES, CONFIG)
 PROC = None
 SERVER = None
 SYSTEM_ACTIVE = False
+SYSTEM_MODE = None
 LAST_ERROR = ""
 HEALTH_TOKEN = None
 HEALTH_FAILURES = 0
@@ -118,7 +119,7 @@ def record_failure(message):
 
 
 def start():
-    global PROC, SYSTEM_ACTIVE, LAST_ERROR, HEALTH_TOKEN, HEALTH_FAILURES, NEXT_HEALTH_CHECK
+    global PROC, SYSTEM_ACTIVE, SYSTEM_MODE, LAST_ERROR, HEALTH_TOKEN, HEALTH_FAILURES, NEXT_HEALTH_CHECK
     if running(): return
     LAST_ERROR = ""
     HEALTH_TOKEN = secrets.token_urlsafe(32)
@@ -155,12 +156,15 @@ def start():
         raise ValueError(LAST_ERROR)
     diagnostics.finish()
     try:
-        sp.enable(PROC.pid, CONFIG['port'])
+        if SERVER is not None:
+            SYSTEM_MODE = sp.enable(PROC.pid, CONFIG['port'], pac_port=SERVER.server_port)
+        else:
+            SYSTEM_MODE = sp.enable(PROC.pid, CONFIG['port'])
         SYSTEM_ACTIVE = True
         NEXT_HEALTH_CHECK = time.monotonic() + HEALTH_INTERVAL
     except Exception as exc:
         stop()
-        if sp.JOURNAL.exists() and not sp.wait_restore():
+        if sp.recovery_pending() and not sp.wait_restore():
             LAST_ERROR = 'Startup failed and network restoration is pending. Use Recover network settings.'
         else:
             LAST_ERROR = str(exc)
@@ -206,7 +210,7 @@ def monitor_session(now=None):
         code = PROC.poll() if PROC is not None else 'unknown'
         fail_session(f'Proxy engine stopped unexpectedly (exit {code}).')
         return
-    if not sp.JOURNAL.exists():
+    if not sp.recovery_pending():
         fail_session('The system proxy supervisor ended the session unexpectedly.')
         return
     now = time.monotonic() if now is None else now
@@ -237,7 +241,7 @@ def monitor():
 
 def state():
     ca = CA/'mitmproxy-ca-cert.pem'
-    return {'config':CONFIG,'running':running() and SYSTEM_ACTIVE,'engine':bool(engine()), 'ca':str(ca), 'ca_exists':ca.exists(), 'ca_trusted':sp.cert_trusted(ca), 'recovery':sp.JOURNAL.exists() and not SYSTEM_ACTIVE, 'error':LAST_ERROR}
+    return {'config':CONFIG,'running':running() and SYSTEM_ACTIVE,'system_mode':SYSTEM_MODE if SYSTEM_ACTIVE else None,'engine':bool(engine()), 'ca':str(ca), 'ca_exists':ca.exists(), 'ca_trusted':sp.cert_trusted(ca), 'recovery':sp.recovery_pending() and not SYSTEM_ACTIVE, 'error':LAST_ERROR}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args): pass
@@ -248,6 +252,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(status); self.send_header('Content-Type',kind+'; charset=utf-8'); self.send_header('Content-Length',str(len(payload))); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('X-Frame-Options','DENY'); self.send_header('Referrer-Policy','no-referrer'); self.end_headers(); self.wfile.write(payload)
     def do_GET(self):
         if not self.valid(): return self.send_data(403,{'error':'Invalid host'})
+        if self.path=='/mapremote-proxy.pac':
+            return self.send_data(200,sp.pac_source(CONFIG['port']),'application/x-ns-proxy-autoconfig')
         if self.path=='/': return self.send_data(200,(ROOT/'index.html').read_text().replace('__TOKEN__',TOKEN),'text/html')
         if self.path=='/api/state' and self.headers.get('X-MapRemote-Token')==TOKEN:
             with MUTEX: return self.send_data(200,state())
