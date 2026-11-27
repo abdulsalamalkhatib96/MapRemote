@@ -1,4 +1,4 @@
-import atexit, errno, fcntl, json, os, secrets, shutil, signal, socket, subprocess, threading, time, webbrowser
+import atexit, errno, fcntl, http.client, json, os, secrets, shutil, signal, socket, subprocess, threading, time, webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,6 +22,10 @@ PROC = None
 SERVER = None
 SYSTEM_ACTIVE = False
 LAST_ERROR = ""
+HEALTH_TOKEN = None
+HEALTH_FAILURES = 0
+HEALTH_INTERVAL = 5
+NEXT_HEALTH_CHECK = 0
 
 def engine():
     bundled = ROOT / 'mitmdump'
@@ -85,15 +89,47 @@ def ensure_listener_available(port, timeout=2):
         time.sleep(.1)
 
 
+def engine_healthy(port, token):
+    if not token:
+        return False
+    conn = http.client.HTTPConnection('127.0.0.1', port, timeout=1)
+    try:
+        conn.request('GET', 'http://mapremote-health.invalid/__mapremote_health',
+                     headers={'X-MapRemote-Health': token, 'Connection': 'close'})
+        response = conn.getresponse()
+        return response.status == 204 and response.getheader('X-MapRemote-Health') == token
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        conn.close()
+
+
+def record_failure(message):
+    global LAST_ERROR
+    LAST_ERROR = message
+    # Lifecycle diagnostics only, no URLs, headers, or captured traffic.
+    try:
+        path = DATA / 'last-failure.txt'
+        tmp = DATA / '.last-failure.tmp'
+        tmp.write_text(time.strftime('%Y-%m-%d %H:%M:%S %z') + '\n' + message + '\n')
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def start():
-    global PROC, SYSTEM_ACTIVE, LAST_ERROR
+    global PROC, SYSTEM_ACTIVE, LAST_ERROR, HEALTH_TOKEN, HEALTH_FAILURES, NEXT_HEALTH_CHECK
     if running(): return
     LAST_ERROR = ""
+    HEALTH_TOKEN = secrets.token_urlsafe(32)
+    HEALTH_FAILURES = 0
+    NEXT_HEALTH_CHECK = 0
     exe = engine()
     if not exe: raise ValueError('Bundled proxy engine missing. Reinstall MapRemote from a complete DMG (source developers can install mitmproxy separately).')
     ensure_listener_available(CONFIG['port'])
     env = os.environ.copy(); env['MAPREMOTE_RULES'] = str(RULES)
     env['MAPREMOTE_CONTROLLER_PID'] = str(os.getpid())
+    env['MAPREMOTE_HEALTH_TOKEN'] = HEALTH_TOKEN
     args = [exe,'--listen-host','127.0.0.1','--listen-port',str(CONFIG['port']), '--mode','regular', '--set',f'confdir={CA}', '--set','connection_strategy=lazy','--set','upstream_cert=false','--set','flow_detail=0','--set','termlog_verbosity=error','--set','stream_large_bodies=1m','-s',str(ROOT/'addon.py')]
     PROC = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     diagnostics = StartupDiagnostics(PROC)
@@ -106,11 +142,10 @@ def start():
             stop()
             LAST_ERROR = f'Proxy exited during startup (exit {code}).' + (f'\n{detail}' if detail else '\nNo engine diagnostics available.')
             raise ValueError(LAST_ERROR)
-        try:
-            with socket.create_connection(('127.0.0.1',CONFIG['port']),timeout=.15): pass
+        if engine_healthy(CONFIG['port'], HEALTH_TOKEN):
             if ready_since is None: ready_since = time.monotonic()
             if time.monotonic() - ready_since >= .3: break
-        except OSError:
+        else:
             ready_since = None
         time.sleep(.1)
     else:
@@ -122,6 +157,7 @@ def start():
     try:
         sp.enable(PROC.pid, CONFIG['port'])
         SYSTEM_ACTIVE = True
+        NEXT_HEALTH_CHECK = time.monotonic() + HEALTH_INTERVAL
     except Exception as exc:
         stop()
         if sp.JOURNAL.exists() and not sp.wait_restore():
@@ -152,6 +188,39 @@ def cleanup():
 
 atexit.register(cleanup)
 
+def fail_session(reason):
+    try:
+        stop()
+    except Exception as exc:
+        record_failure(f'{reason} Network recovery pending: {exc}')
+        return
+    record_failure(f'{reason} Previous network settings restored. Start the proxy again when ready.')
+
+
+def monitor_session(now=None):
+    """Called under MUTEX; never confuse a historical success with a live session."""
+    global HEALTH_FAILURES, NEXT_HEALTH_CHECK
+    if not SYSTEM_ACTIVE:
+        return
+    if not running():
+        code = PROC.poll() if PROC is not None else 'unknown'
+        fail_session(f'Proxy engine stopped unexpectedly (exit {code}).')
+        return
+    if not sp.JOURNAL.exists():
+        fail_session('The system proxy supervisor ended the session unexpectedly.')
+        return
+    now = time.monotonic() if now is None else now
+    if now < NEXT_HEALTH_CHECK:
+        return
+    NEXT_HEALTH_CHECK = now + HEALTH_INTERVAL
+    if engine_healthy(CONFIG['port'], HEALTH_TOKEN):
+        HEALTH_FAILURES = 0
+    else:
+        HEALTH_FAILURES += 1
+        if HEALTH_FAILURES >= 3:
+            fail_session('Proxy engine failed three consecutive local HTTP health checks.')
+
+
 def monitor():
     parent = int(os.environ.get('MAPREMOTE_PARENT_PID','0'))
     while True:
@@ -161,9 +230,10 @@ def monitor():
             except ProcessLookupError:
                 cleanup(); SERVER.shutdown(); return
         with MUTEX:
-            if SYSTEM_ACTIVE and (not running() or not sp.JOURNAL.exists()):
-                try: stop()
-                except Exception: pass
+            try:
+                monitor_session()
+            except Exception as exc:
+                fail_session(f'Proxy supervision failed: {type(exc).__name__}.')
 
 def state():
     ca = CA/'mitmproxy-ca-cert.pem'
@@ -183,7 +253,7 @@ class Handler(BaseHTTPRequestHandler):
             with MUTEX: return self.send_data(200,state())
         self.send_data(404,{'error':'Not found'})
     def do_POST(self):
-        global CONFIG
+        global CONFIG, LAST_ERROR
         if not self.valid() or self.headers.get('X-MapRemote-Token')!=TOKEN or self.headers.get('Origin')!=f'http://127.0.0.1:{SERVER.server_port}': return self.send_data(403,{'error':'Forbidden'})
         try:
             n=int(self.headers.get('Content-Length','0'))
@@ -201,6 +271,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif self.path=='/api/recover':
                     if running(): raise ValueError('Stop the proxy first.')
                     sp.recover()
+                    LAST_ERROR = ''
                 elif self.path=='/api/preview':
                     result=map_url(normalize(data['config']),data['url'],data['method'])
                     return self.send_data(200,{'result':result})

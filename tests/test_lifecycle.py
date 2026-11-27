@@ -12,13 +12,13 @@ class LifecycleTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.app.cleanup(); cls.app.LOCK.close(); cls.temp.cleanup()
     def setUp(self):
-        self.app.PROC=None; self.app.SYSTEM_ACTIVE=False; self.app.LAST_ERROR=''
+        self.app.PROC=None; self.app.SYSTEM_ACTIVE=False; self.app.LAST_ERROR=''; self.app.HEALTH_FAILURES=0; self.app.NEXT_HEALTH_CHECK=0
     def fake(self):
         proc=MagicMock(); proc.pid=1234; proc.poll.return_value=None; proc.stdout=io.BytesIO()
         return proc
     def test_start_stop(self):
         p=self.fake()
-        with patch.object(self.app,'engine',return_value='/fake/mitmdump'),patch.object(self.app.socket,'socket'),patch.object(self.app.socket,'create_connection'),patch.object(self.app.subprocess,'Popen',return_value=p),patch.object(self.app.sp,'enable') as enable,patch.object(self.app.sp,'wait_restore',return_value=True) as restore:
+        with patch.object(self.app,'engine',return_value='/fake/mitmdump'),patch.object(self.app.socket,'socket'),patch.object(self.app,'engine_healthy',return_value=True),patch.object(self.app.subprocess,'Popen',return_value=p),patch.object(self.app.sp,'enable') as enable,patch.object(self.app.sp,'wait_restore',return_value=True) as restore:
             self.app.start(); enable.assert_called_once_with(1234,self.app.CONFIG['port']); self.assertTrue(self.app.SYSTEM_ACTIVE)
             self.app.stop(); p.terminate.assert_called_once(); restore.assert_called_once(); self.assertFalse(self.app.SYSTEM_ACTIVE)
     def test_reusable_port_after_closed_connection(self):
@@ -58,7 +58,7 @@ class LifecycleTest(unittest.TestCase):
             self.assertIn('regression sentinel',self.app.LAST_ERROR)
     def test_cancel_permission_terminates_engine(self):
         p=self.fake()
-        with patch.object(self.app,'engine',return_value='/fake/mitmdump'),patch.object(self.app.socket,'socket'),patch.object(self.app.socket,'create_connection'),patch.object(self.app.subprocess,'Popen',return_value=p),patch.object(self.app.sp,'enable',side_effect=ValueError('cancelled')):
+        with patch.object(self.app,'engine',return_value='/fake/mitmdump'),patch.object(self.app.socket,'socket'),patch.object(self.app,'engine_healthy',return_value=True),patch.object(self.app.subprocess,'Popen',return_value=p),patch.object(self.app.sp,'enable',side_effect=ValueError('cancelled')):
             with self.assertRaisesRegex(ValueError,'cancelled'): self.app.start()
             p.terminate.assert_called_once(); self.assertIsNone(self.app.PROC); self.assertFalse(self.app.SYSTEM_ACTIVE)
     def test_restore_failure_reported(self):
@@ -66,6 +66,35 @@ class LifecycleTest(unittest.TestCase):
         with patch.object(self.app.sp,'wait_restore',return_value=False):
             with self.assertRaisesRegex(ValueError,'restore'): self.app.stop()
         self.assertIn('Recover',self.app.LAST_ERROR)
+    def test_unexpected_exit_preserves_failure_and_restores(self):
+        self.app.PROC=self.fake()
+        self.app.PROC.poll.return_value=137
+        self.app.SYSTEM_ACTIVE=True
+        with patch.object(self.app.sp,'wait_restore',return_value=True) as restore:
+            self.app.monitor_session()
+        restore.assert_called_once()
+        self.assertFalse(self.app.SYSTEM_ACTIVE)
+        self.assertIn('exit 137', self.app.LAST_ERROR)
+        self.assertIn('restored', self.app.LAST_ERROR)
+        self.assertIn('exit 137',(self.app.DATA/'last-failure.txt').read_text())
+
+    def test_unresponsive_engine_requires_consecutive_failures(self):
+        self.app.PROC=self.fake(); self.app.SYSTEM_ACTIVE=True
+        with patch.object(self.app.sp,'JOURNAL',self.app.RULES),patch.object(self.app,'engine_healthy',side_effect=[False,True,False,False,False]),patch.object(self.app.sp,'wait_restore',return_value=True):
+            for now in (10,15,20,25):
+                self.app.monitor_session(now)
+                self.assertTrue(self.app.SYSTEM_ACTIVE)
+            self.app.monitor_session(30)
+        self.assertFalse(self.app.SYSTEM_ACTIVE)
+        self.assertIn('three consecutive',self.app.LAST_ERROR)
+
+    def test_recovery_failure_is_not_reported_as_success(self):
+        self.app.PROC=self.fake(); self.app.PROC.poll.return_value=-9; self.app.SYSTEM_ACTIVE=True
+        with patch.object(self.app.sp,'wait_restore',return_value=False):
+            self.app.monitor_session()
+        self.assertIn('recovery pending',self.app.LAST_ERROR)
+        self.assertNotIn('settings restored',self.app.LAST_ERROR)
+
     def test_recover_command(self):
         with patch.object(self.app.sp,'helper',return_value=Path('/a b/ProxyHelper')),patch.object(self.app.sp,'admin') as admin:
             self.app.sp.recover(); admin.assert_called_once(); command=admin.call_args.args[0]; self.assertIn("'/a b/ProxyHelper'",command); self.assertIn('"$d/ProxyHelper" recover',command)

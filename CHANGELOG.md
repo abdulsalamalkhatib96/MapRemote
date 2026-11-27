@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Supervise live proxy responsiveness through an authenticated local HTTP health check; recover after three consecutive failures or unexpected engine exit.
+- Add an independent privileged recovery guard, retry network restoration on temporary errors, and tolerate transient PID identity lookup failures.
+- Preserve unexpected-stop diagnostics and replace stale success messages in the UI; test engine failure recovery state.
 - Fix false port-in-use errors after Stop by checking a reusable TCP listener and briefly retrying transient bind conflicts.
 - Stop orphaned bundled engines when their controller exits unexpectedly; serialize controller cleanup with Start/Stop.
 - Verify repeated real bundled engine restart on the same port and distinguish a genuine competing listener from TIME_WAIT.

@@ -128,7 +128,7 @@ func apply(_ port: Int, sessionValid: () -> Bool) throws {
 func identity(_ pid: Int32) -> String? {
     guard pid > 1, kill(pid, 0) == 0 else { return nil }
     let proc = Process(); proc.executableURL = URL(fileURLWithPath: "/bin/ps"); proc.arguments = ["-p", String(pid), "-o", "lstart=", "-o", "stat="]
-    var env = ProcessInfo.processInfo.environment; env["LC_ALL"] = "C"; proc.environment = env
+    var env = ProcessInfo.processInfo.environment; env["LC_ALL"] = "C"; env["TZ"] = "UTC"; proc.environment = env
     let pipe = Pipe(); proc.standardOutput = pipe; proc.standardError = FileHandle.nullDevice
     do { try proc.run() } catch { return nil }
     let data = pipe.fileHandleForReading.readDataToEndOfFile(); proc.waitUntilExit()
@@ -136,7 +136,53 @@ func identity(_ pid: Int32) -> String? {
     guard proc.terminationStatus == 0, words.count >= 6, !words.last!.contains("Z") else { return nil }
     return words.prefix(5).joined(separator: " ")
 }
+// Keep the journal and lock until restoration actually succeeds. Temporary
+// SCPreferences contention after sleep/network changes must not strand a proxy.
+func restoreWithRetry() {
+    while FileManager.default.fileExists(atPath: journal.path) {
+        do { try restore(); return }
+        catch {
+            phase("Recovery retry: \(error)")
+            Thread.sleep(forTimeInterval: 2)
+        }
+    }
+}
+func acquireRecoveryLock() -> Int32 {
+    let fd = open(base.appendingPathComponent("lock").path, O_CREAT | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0o600)
+    guard fd >= 0 else { return -1 }
+    if flock(fd, LOCK_EX | LOCK_NB) != 0 { close(fd); return -1 }
+    return fd
+}
 func status(_ path: String, _ value: String) throws { try value.write(toFile: path, atomically: true, encoding: .utf8) }
+
+// The independently executing child owns no session lock while its supervisor
+// lives. If the supervisor is killed, it acquires the released lock and
+// restores the journal. A newer session holding the lock must not be touched.
+func runRecoveryGuard(_ parent: Int32, _ readyPath: String) throws {
+    try status(readyPath, "OK")
+    while getppid() == parent { Thread.sleep(forTimeInterval: 0.5) }
+    let fd = acquireRecoveryLock()
+    guard fd >= 0 else { return }
+    defer { close(fd) }
+    restoreWithRetry()
+}
+
+func startRecoveryGuard(_ directory: String) throws -> Process {
+    let child = Process()
+    child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+    let readyPath = URL(fileURLWithPath: directory).appendingPathComponent("guard-ready").path
+    child.arguments = ["guard", String(getpid()), readyPath]
+    child.standardInput = FileHandle.nullDevice
+    // Inherit the already redirected stderr/stdout; never hold osascript pipes.
+    try child.run()
+    let deadline = ProcessInfo.processInfo.systemUptime + 5
+    while ProcessInfo.processInfo.systemUptime < deadline {
+        if !child.isRunning { throw Failure("Recovery guard exited during startup") }
+        if (try? String(contentsOfFile: readyPath, encoding: .utf8)) == "OK" { return child }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    throw Failure("Recovery guard readiness timed out")
+}
 let args = CommandLine.arguments
 var ready: String? = args.count == 6 && args[1] == "run" ? args[5] : nil
 var ownsLock = false
@@ -150,10 +196,14 @@ do {
         print("MapRemote ProxyHelper OK")
         exit(0)
     }
+    if args.count == 4 && args[1] == "guard", let parent = Int32(args[2]), parent > 1 {
+        try runRecoveryGuard(parent, args[3])
+        exit(0)
+    }
     try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
     guard chmod(base.path, 0o755) == 0 else { throw Failure("Cannot set recovery directory permissions") }
-    lockFD = open(base.appendingPathComponent("lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
-    guard lockFD >= 0, flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { throw Failure("Another MapRemote system session is active") }
+    lockFD = acquireRecoveryLock()
+    guard lockFD >= 0 else { throw Failure("Another MapRemote system session is active") }
     ownsLock = true
     phase("Checking previous recovery journal")
     try restore()
@@ -165,18 +215,26 @@ do {
         FileManager.default.fileExists(atPath: sessionDirectory) && identity(parent) == parentID && identity(engine) == engineID
     }
     guard sessionValid() else { throw Failure("Startup cancelled") }
+    let recoveryGuard = try startRecoveryGuard(sessionDirectory)
     activated = true
     try apply(port, sessionValid: sessionValid)
     guard sessionValid() else { throw Failure("Startup cancelled after applying proxy") }
     phase("Proxy ready")
     try status(args[5], "OK"); ready = nil
-    while identity(parent) == parentID && identity(engine) == engineID { Thread.sleep(forTimeInterval: 0.5) }
-    try restore(); activated = false
+    var missed = 0
+    while recoveryGuard.isRunning {
+        // A single ps failure is not proof of process death. Definite ESRCH
+        // still restores promptly, while transient failures get three attempts.
+        if (kill(parent, 0) != 0 && errno == ESRCH) || (kill(engine, 0) != 0 && errno == ESRCH) { break }
+        if identity(parent) == parentID && identity(engine) == engineID { missed = 0 }
+        else { missed += 1; if missed >= 3 { break } }
+        Thread.sleep(forTimeInterval: 1)
+    }
+    restoreWithRetry(); activated = false
 
 } catch {
-    if ownsLock && activated {
-        do { try restore() } catch { phase("Recovery failed: \(error)") }
-    }
     if let path = ready { try? status(path, "ERROR: \(error)") }
-    FileHandle.standardError.write(Data("\(error)\n".utf8)); exit(1)
+    FileHandle.standardError.write(Data("\(error)\n".utf8))
+    if ownsLock && activated { restoreWithRetry() }
+    exit(1)
 }

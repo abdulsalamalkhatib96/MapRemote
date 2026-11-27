@@ -8,6 +8,7 @@ from mitmproxy import http
 class MapRemoteCustomAddon:
     def __init__(self):
         self.path = Path(os.environ['MAPREMOTE_RULES'])
+        self.health_token = os.environ.get('MAPREMOTE_HEALTH_TOKEN')
         self.stamp = None
         self.config = {'enabled':False,'rules':[]}
 
@@ -29,6 +30,11 @@ class MapRemoteCustomAddon:
             data.ignore_connection = True
 
     def requestheaders(self, flow: http.HTTPFlow):
+        if (self.health_token and
+                flow.request.url == 'http://mapremote-health.invalid/__mapremote_health' and
+                flow.request.headers.get('X-MapRemote-Health') == self.health_token):
+            flow.response = http.Response.make(204, b'', {'X-MapRemote-Health': self.health_token})
+            return
         self.refresh_config()
         try:
             result = rules.map_url(self.config, flow.request.url, flow.request.method)

@@ -67,7 +67,17 @@ with patch.object(app.sp, 'enable'), patch.object(app.sp, 'wait_restore', return
             app.stop()
         assert not app.running() and not app.SYSTEM_ACTIVE
         app.ensure_listener_available(port, timeout=2)
-print('PASS: three real bundled engine start/stop/restart cycles on the same port.')
+    app.start()
+    try:
+        assert app.engine_healthy(port, app.HEALTH_TOKEN)
+        app.PROC.kill()
+        app.PROC.wait(timeout=5)
+        app.monitor_session()
+        assert not app.running() and not app.SYSTEM_ACTIVE
+        assert 'stopped unexpectedly' in app.LAST_ERROR
+    finally:
+        app.stop()
+print('PASS: three real bundled engine restart cycles, authenticated HTTP health checks and unexpected engine exit recovery state.')
 """)
         p = subprocess.Popen([str(python), "-E", "-s", "-B", str(resources / "app.py")], env=env, cwd=resources, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
