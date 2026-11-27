@@ -24,6 +24,11 @@ SYSTEM_ACTIVE = False
 LAST_ERROR = ""
 
 def engine():
+    bundled = ROOT / 'mitmdump'
+    if bundled.is_file() and os.access(bundled, os.X_OK):
+        return str(bundled)
+    if os.environ.get('MAPREMOTE_NATIVE'):
+        return None
     return shutil.which('mitmdump') or next((str(p) for p in [Path('/opt/homebrew/bin/mitmdump'),Path('/usr/local/bin/mitmdump'),Path('/Applications/mitmproxy.app/Contents/MacOS/mitmdump')] if p.is_file() and os.access(p,os.X_OK)),None)
 
 def running(): return PROC is not None and PROC.poll() is None
@@ -66,7 +71,7 @@ def start():
     if running(): return
     LAST_ERROR = ""
     exe = engine()
-    if not exe: raise ValueError('mitmdump not found. Run brew install --cask mitmproxy and retry.')
+    if not exe: raise ValueError('Bundled proxy engine missing. Reinstall MapRemote from a complete DMG (source developers can install mitmproxy separately).')
     with socket.socket() as s:
         try: s.bind(('127.0.0.1',CONFIG['port']))
         except OSError: raise ValueError('Proxy port is already in use. Choose another port.')
@@ -74,7 +79,7 @@ def start():
     args = [exe,'--listen-host','127.0.0.1','--listen-port',str(CONFIG['port']), '--mode','regular', '--set',f'confdir={CA}', '--set','connection_strategy=lazy','--set','upstream_cert=false','--set','flow_detail=0','--set','termlog_verbosity=error','--set','stream_large_bodies=1m','-s',str(ROOT/'addon.py')]
     PROC = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     diagnostics = StartupDiagnostics(PROC)
-    deadline = time.monotonic()+8
+    deadline = time.monotonic()+20
     ready_since = None
     while time.monotonic()<deadline:
         if PROC.poll() is not None:

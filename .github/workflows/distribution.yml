@@ -1,0 +1,131 @@
+name: macOS distribution
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Build.command'
+      - '*.py'
+      - '*.swift'
+      - 'Info.plist'
+      - 'index.html'
+      - 'assets/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/distribution.yml'
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: 'Sign and notarize using configured Apple Developer secrets'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+concurrency:
+  group: distribution-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    env:
+      SIGN_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.sign || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify target architecture and unit tests
+        run: |
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          python -m unittest discover -s tests -v
+          echo "MAPREMOTE_BUILD_PYTHON=$(command -v python)" >> "$GITHUB_ENV"
+      - name: Configure Apple Developer ID
+        if: env.SIGN_REQUESTED == 'true'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for key in APPLE_CERTIFICATE_BASE64 APPLE_CERTIFICATE_PASSWORD APPLE_SIGN_IDENTITY APPLE_ID APPLE_TEAM_ID APPLE_APP_PASSWORD; do
+            [[ -n "${!key:-}" ]] || { echo "Missing required signing secret: $key"; exit 1; }
+          done
+          keychain="$RUNNER_TEMP/mapremote-signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+          printf '%s' "$APPLE_CERTIFICATE_BASE64" | base64 -D > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security find-identity -v -p codesigning "$keychain"
+          xcrun notarytool store-credentials MapRemoteNotary --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --keychain "$keychain"
+          echo "MAPREMOTE_SIGN_IDENTITY=$APPLE_SIGN_IDENTITY" >> "$GITHUB_ENV"
+          echo "MAPREMOTE_NOTARY_PROFILE=MapRemoteNotary" >> "$GITHUB_ENV"
+          echo "MAPREMOTE_NOTARY_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/certificate.p12"
+      - name: Build standalone app
+        run: MAPREMOTE_BUILD_ONLY=1 bash Build.command
+      - name: Validate relocated app and real proxy traffic
+        run: python scripts/test-bundle.py MapRemote.app
+      - name: Create DMG
+        run: bash scripts/package-dmg.sh
+      - name: Upload DMG and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: MapRemote-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+      - name: Remove signing keychain
+        if: always() && env.SIGN_REQUESTED == 'true'
+        run: |
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security delete-keychain "$RUNNER_TEMP/mapremote-signing.keychain-db" || true
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: MapRemote-*
+          path: release
+          merge-multiple: true
+      - name: Publish verified builds
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGN_REQUESTED: ${{ github.event_name == 'workflow_dispatch' && inputs.sign || false }}
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum -c ./*.sha256
+          test -f MapRemote-3.0-arm64.dmg
+          test -f MapRemote-3.0-x86_64.dmg
+          if [[ "$SIGN_REQUESTED" == true ]]; then
+            tag=v3.0
+            title="MapRemote 3.0 — signed and notarized"
+            notes="Standalone DMGs for Apple Silicon and Intel. Both builds passed relocation and HTTP/HTTPS proxy smoke tests. Administrator approval and explicit CA trust remain required."
+            flags=()
+          else
+            tag="v3.0-preview-${GITHUB_SHA:0:7}"
+            title="MapRemote 3.0 — unsigned preview"
+            notes="Standalone DMGs (ad-hoc signed, not Apple-notarized). Both builds passed relocation and HTTP/HTTPS proxy smoke tests. Review source before granting network or CA permissions. Do not disable Gatekeeper."
+            flags=(--prerelease)
+          fi
+          gh release create "$tag" ./*.dmg ./*.sha256 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$title" --notes "$notes" "${flags[@]}"

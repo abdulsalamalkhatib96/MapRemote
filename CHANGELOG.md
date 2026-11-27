@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.0
+- Bundle a relocatable CPython runtime and mitmproxy engine in the macOS application; remove runtime dependency on Homebrew.
+- Add native arm64 and x86_64 distribution builds, DMG packaging, SHA-256 checksums and release automation.
+- Add opt-in Developer ID signing, hardened runtime and Apple notarization pipeline.
+- Add relocation and live HTTP/HTTPS smoke tests before publishing; retain explicit CA trust and administrator approval.
+- Preserve existing mapping rules and user-generated CA files in Application Support.
+
 ## 2.5
 - Replace `nohup` with a redirected background subshell to avoid macOS console-detachment failures.
 - Repository packaging: add application icon, English documentation, CI configuration and contribution/security guides.

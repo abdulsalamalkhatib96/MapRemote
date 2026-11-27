@@ -20,10 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         web = WKWebView(frame: .zero, configuration: configuration); web.navigationDelegate = self; web.uiDelegate = self; window.contentView = web
         window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         guard let resources = Bundle.main.resourceURL else { alert("Missing resources."); NSApp.terminate(nil); return }
-        let candidates = ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]
-        guard let python = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { alert("Install Python 3 with Homebrew (brew install python)."); NSApp.terminate(nil); return }
-        let p = Process(); p.executableURL = URL(fileURLWithPath: python); p.arguments = [resources.appendingPathComponent("app.py").path]
-        var env = ProcessInfo.processInfo.environment; env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"; env["MAPREMOTE_NATIVE"] = "1"; env["MAPREMOTE_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier); p.environment = env
+        let python = resources.appendingPathComponent("runtime/bin/python3")
+        guard FileManager.default.isExecutableFile(atPath: python.path) else { alert("The bundled Python runtime is missing. Reinstall MapRemote from a complete DMG."); NSApp.terminate(nil); return }
+        let p = Process(); p.executableURL = python; p.arguments = ["-E", "-s", "-B", resources.appendingPathComponent("app.py").path]
+        var env = ProcessInfo.processInfo.environment; env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"; env["PYTHONNOUSERSITE"] = "1"; env["PYTHONDONTWRITEBYTECODE"] = "1"; env["MAPREMOTE_NATIVE"] = "1"; env["MAPREMOTE_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier); p.environment = env
         let pipe = Pipe(); p.standardOutput = pipe; p.standardError = FileHandle.nullDevice; child = p
         p.terminationHandler = { [weak self] process in DispatchQueue.main.async { guard let self = self, !self.closing else { return }; if process.terminationStatus != 0 { self.alert("The local controller stopped. Close and reopen MapRemote. If network recovery is needed, use Recover network settings.") }; NSApp.terminate(nil) } }
         do { try p.run() } catch { alert(error.localizedDescription); NSApp.terminate(nil); return }

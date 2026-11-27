@@ -5,10 +5,10 @@
   <p>A focused macOS development proxy for mapping remote HTTP and HTTPS endpoints to local or alternative backends.</p>
   <p>
     <a href="https://github.com/abdulsalamalkhatib96/MapRemote/actions/workflows/ci.yml"><img src="https://github.com/abdulsalamalkhatib96/MapRemote/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-    <img src="https://img.shields.io/badge/version-2.5-0F9F9A" alt="Version 2.5" />
+    <img src="https://img.shields.io/badge/version-3.0-0F9F9A" alt="Version 3.0" />
     <img src="https://img.shields.io/badge/macOS-12%2B-222222?logo=apple" alt="macOS 12+ target" />
     <img src="https://img.shields.io/badge/Swift-AppKit-F05138?logo=swift&logoColor=white" alt="Swift" />
-    <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python" />
+    <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python" />
   </p>
   <p><a href="#quick-start">Quick start</a> · <a href="#mapping-rules">Mapping rules</a> · <a href="#architecture">Architecture</a> · <a href="#troubleshooting">Troubleshooting</a></p>
 </div>
@@ -46,32 +46,32 @@ MapRemote is deliberately narrow in scope: it provides a rule editor, mapping pr
 
 ## Quick start
 
-### Requirements
+### Install from a DMG (no external runtime)
 
-- macOS 12 or later is the deployment target; actual compatibility depends on the installed SDK and dependencies. Full native compatibility has not yet been validated on every supported release.
-- Python 3.10+ available in a standard Homebrew or system path.
-- `mitmdump` from [mitmproxy](https://mitmproxy.org/).
-- Apple Command Line Tools for building, and administrator approval for changing network proxy settings.
-- Homebrew is optional but convenient for installing dependencies.
+Open the [Releases page](https://github.com/abdulsalamalkhatib96/MapRemote/releases). Select the DMG for your Mac:
 
-```bash
-brew install python
-brew install --cask mitmproxy
-xcode-select --install # only if the command line tools are missing
-```
+| Mac | File |
+| --- | --- |
+| Apple Silicon (M-series) | `MapRemote-3.0-arm64.dmg` |
+| Intel | `MapRemote-3.0-x86_64.dmg` |
 
-### Build from source
+Mount the disk image, drag MapRemote to Applications, eject the disk image, and open the application. The distribution contains its own relocatable CPython 3.12 and mitmproxy 12.3.1. No Homebrew, Terminal, system Python or separate mitmproxy installation is needed on the destination Mac. The two architectures are built natively, not a single universal binary. macOS 12 is the deployment target; automated native builds run on macOS 15 and earlier systems still require compatibility verification.
+
+**Release status:** the distribution workflow publishes an explicitly labeled ad-hoc-signed preview only after both architecture builds and smoke tests pass. Such a preview is not Apple-notarized. A signed and notarized release requires the owner's Apple Developer ID credentials. Do not disable Gatekeeper or SIP; review the source before using Apple's [per-app approval process](https://support.apple.com/en-us/102445) for a trusted preview.
+
+### Build from source (developers only)
+
+On a Mac with Apple Command Line Tools and Python 3 installed:
 
 ```bash
 git clone https://github.com/abdulsalamalkhatib96/MapRemote.git
 cd MapRemote
-python3 smoke_test.py
-bash Build.command
+MAPREMOTE_BUILD_ONLY=1 bash Build.command
+python3 scripts/test-bundle.py MapRemote.app
+bash scripts/package-dmg.sh
 ```
 
-`Build.command` compiles the Swift application and privileged helper, creates the macOS icon, copies the controller resources and ad-hoc signs the resulting `MapRemote.app`. It opens the app on success. Move the app to Applications if desired. To rebuild, quit and remove the existing generated app first. For build-only mode, use `MAPREMOTE_BUILD_ONLY=1 bash Build.command`.
-
-This repository distributes source code, not a notarized standalone binary. The generated app still requires Python and mitmproxy on the destination Mac, and uses the build machine's architecture. If macOS displays an unverified-developer warning, review the source and use Apple's [per-app approval process](https://support.apple.com/en-us/102445) only if you trust it. Do not disable Gatekeeper or SIP.
+The build downloads a pinned redistributable CPython archive from [Python Build Standalone](https://github.com/astral-sh/python-build-standalone), verifies the upstream SHA-256 digest, installs mitmproxy and binary-wheel dependencies into the bundle, records resolved package versions, compiles the native components and signs the bundle. It requires Internet access at build time only. The final app contains the runtime, proxy engine and application resources. See [Distribution guide](docs/DISTRIBUTION.md) for signing, notarization, CI, licensing and recovery details.
 
 ### First run
 
@@ -113,14 +113,14 @@ The source scheme, host and effective port must match. Prefix matching respects 
 
 | Component | Responsibility |
 | --- | --- |
-| `NativeApp.swift` | AppKit window and embedded WebKit interface; launches the Python controller. |
+| `NativeApp.swift` | AppKit window and embedded WebKit interface; launches the bundled Python controller. |
 | `index.html` | Rule editor, preview and lifecycle controls. |
 | `app.py` | Loopback control API, engine startup, diagnostics and shutdown. |
 | `rules.py` | Validation, deterministic mapping and atomic JSON persistence. |
 | `addon.py` | mitmproxy request-header hook and live rule reload. |
 | `system_proxy.py` | Administrator prompts, helper supervision and certificate actions. |
 | `ProxyHelper.swift` | SystemConfiguration changes, recovery journal and PID monitoring. |
-| `smoke_test.py` | Real loopback HTTP mapping test with installed mitmdump. |
+| `smoke_test.py` | Real loopback HTTP and HTTPS mapping test with temporary CA. |
 | `assets/` | Original vector icon and 1024px raster source. |
 
 The proxy listens on `127.0.0.1:9090` by default. The controller uses an ephemeral loopback port, a session token, and Host/Origin checks. Rules and CA material remain local:
@@ -138,20 +138,21 @@ The privileged helper stores a root-owned recovery journal at `/private/var/db/c
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 smoke_test.py
+python3 smoke_test.py # source development with mitmproxy installed
 MAPREMOTE_BUILD_ONLY=1 bash Build.command # macOS only
+python3 scripts/test-bundle.py MapRemote.app
 codesign --verify --deep --strict --verbose=2 MapRemote.app
 ```
 
-The smoke test uses a temporary CA, temporary rules and loopback HTTP server without modifying system proxy settings or trust. GitHub Actions is configured for Python unit tests, native macOS build and a live proxy smoke test. Privileged network changes, HTTPS trust prompts, crash recovery and end-to-end native UI behavior still require manual testing on a Mac. CI configuration is not evidence of a successful run.
+The smoke tests use a temporary CA, temporary rules and a loopback server without modifying system proxy settings or system trust. The distribution workflow tests a relocated signed bundle using its own runtime on Apple Silicon and Intel before publishing DMGs. Privileged network changes, HTTPS trust prompts, crash recovery and end-to-end native UI behavior still require manual testing on a Mac. CI configuration is not evidence of a successful run.
 
 ## Troubleshooting
 
 | Error / symptom | Action |
 | --- | --- |
 | Proxy port is already in use | Run `lsof -nP -iTCP:9090 -sTCP:LISTEN`; stop only the confirmed conflicting process or choose another port. |
-| `mitmdump` not found | Run `mitmdump --version`; install mitmproxy and restart the app. |
-| Proxy exits during startup | Read the engine diagnostics in the UI and run `python3 smoke_test.py` from the source directory. |
+| `mitmdump` not found | Reinstall MapRemote from a complete DMG. Developers running source code can install mitmproxy separately. |
+| Proxy exits during startup | Read the engine diagnostics in the UI. Source developers can run the bundled relocation test. |
 | Addon collision or `Loader` error | Quit the old app and rebuild from current source; the app embeds its own addon. |
 | `nohup: can't detach from console` | Rebuild using 2.5 or later; this version no longer uses nohup. |
 | Certificate authorization denied | Use Keychain Access to inspect the exact generated public CA certificate and approve trust interactively. |
@@ -164,13 +165,13 @@ The smoke test uses a temporary CA, temporary rules and loopback HTTP server wit
 - A matching request can forward its original authorization headers, cookies and body to a different destination. Never map sensitive traffic to an untrusted backend.
 - No request capture UI or persistent flow logging is provided. The underlying proxy still processes request content.
 - Applications that ignore system proxy settings, pinned TLS clients, VPN/custom network services and proxy-bypassed destinations may not work.
-- This is not a self-contained or Apple-notarized distribution. It has not undergone a complete macOS integration or independent security audit.
+- Standalone packaging does not imply Apple notarization or a complete security audit. Check the exact release's signing status. Privileged UI integration and system trust still require manual Mac validation.
 
 See [SECURITY.md](SECURITY.md) for responsible disclosure and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 ## Changelog and roadmap
 
-See [CHANGELOG.md](CHANGELOG.md) for version history. Future work may include a self-contained runtime, universal binaries, signed/notarized releases, DMG packaging and additional macOS integration testing. These are not implemented in this version.
+See [CHANGELOG.md](CHANGELOG.md) for version history. The 3.0 distribution pipeline builds self-contained architecture-specific DMGs; Apple Developer credentials are required to produce notarized releases. Future work includes broader OS coverage and additional privileged integration testing.
 
 ## Author and licensing
 
