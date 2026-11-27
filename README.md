@@ -150,7 +150,7 @@ The smoke tests use a temporary CA, temporary rules and a loopback server withou
 
 | Error / symptom | Action |
 | --- | --- |
-| Proxy port is already in use | Run `lsof -nP -iTCP:9090 -sTCP:LISTEN`; stop only the confirmed conflicting process or choose another port. |
+| Proxy port is occupied by another listener | MapRemote permits TCP port reuse after Stop and retries transient conflicts. Run `lsof -nP -iTCP:9090 -sTCP:LISTEN` (or substitute your configured port); stop only the confirmed conflicting process or choose another port. The bundled engine exits automatically if its controller dies. |
 | `mitmdump` not found | Reinstall MapRemote from a complete DMG. Developers running source code can install mitmproxy separately. |
 | Proxy exits during startup | Read the engine diagnostics in the UI. Source developers can run the bundled relocation test. |
 | Addon collision or `Loader` error | Quit the old app and rebuild from current source; the app embeds its own addon. |

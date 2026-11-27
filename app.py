@@ -1,4 +1,4 @@
-import atexit, fcntl, json, os, secrets, shutil, signal, socket, subprocess, threading, time, webbrowser
+import atexit, errno, fcntl, json, os, secrets, shutil, signal, socket, subprocess, threading, time, webbrowser
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -66,16 +66,34 @@ class StartupDiagnostics:
         return detail
 
 
+def ensure_listener_available(port, timeout=2):
+    """Match the engine's reusable TCP listener, not TIME_WAIT connections."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind(('127.0.0.1', port))
+                # On BSD/macOS, bind alone is not a reliable listener check.
+                probe.listen(1)
+                return
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise ValueError(f'Cannot open proxy port {port}: {exc}') from exc
+                if time.monotonic() >= deadline:
+                    raise ValueError(f'Proxy port {port} is occupied by another listener. Close the conflicting proxy or choose another port. Diagnostic: lsof -nP -iTCP:{port} -sTCP:LISTEN') from exc
+        time.sleep(.1)
+
+
 def start():
     global PROC, SYSTEM_ACTIVE, LAST_ERROR
     if running(): return
     LAST_ERROR = ""
     exe = engine()
     if not exe: raise ValueError('Bundled proxy engine missing. Reinstall MapRemote from a complete DMG (source developers can install mitmproxy separately).')
-    with socket.socket() as s:
-        try: s.bind(('127.0.0.1',CONFIG['port']))
-        except OSError: raise ValueError('Proxy port is already in use. Choose another port.')
+    ensure_listener_available(CONFIG['port'])
     env = os.environ.copy(); env['MAPREMOTE_RULES'] = str(RULES)
+    env['MAPREMOTE_CONTROLLER_PID'] = str(os.getpid())
     args = [exe,'--listen-host','127.0.0.1','--listen-port',str(CONFIG['port']), '--mode','regular', '--set',f'confdir={CA}', '--set','connection_strategy=lazy','--set','upstream_cert=false','--set','flow_detail=0','--set','termlog_verbosity=error','--set','stream_large_bodies=1m','-s',str(ROOT/'addon.py')]
     PROC = subprocess.Popen(args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     diagnostics = StartupDiagnostics(PROC)
@@ -127,8 +145,10 @@ def stop():
     LAST_ERROR=''
 
 def cleanup():
-    try: stop()
-    except Exception: pass
+    # Quit/parent monitoring can race with a Start request. Serialize them.
+    with MUTEX:
+        try: stop()
+        except Exception: pass
 
 atexit.register(cleanup)
 

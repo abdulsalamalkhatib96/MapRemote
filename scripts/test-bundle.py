@@ -46,6 +46,29 @@ def main():
         run("-c", "import app, pathlib; assert pathlib.Path(app.engine()).resolve() == pathlib.Path('mitmdump').resolve()")
         subprocess.run([str(engine), "--version"], env=env, check=True, timeout=60)
         run(resources / "smoke_test.py")
+        # Exercise the production controller and bundled engine through repeated
+        # Start/Stop cycles, without modifying the CI runner's network settings.
+        run("-c", """
+import app, socket
+from unittest.mock import patch
+with socket.socket() as reserved:
+    reserved.bind(('127.0.0.1', 0))
+    port = reserved.getsockname()[1]
+app.CONFIG = app.CONFIG | {'port': port}
+app.save(app.RULES, app.CONFIG)
+with patch.object(app.sp, 'enable'), patch.object(app.sp, 'wait_restore', return_value=True):
+    for _ in range(3):
+        try:
+            app.start()
+            assert app.running() and app.SYSTEM_ACTIVE
+            with socket.create_connection(('127.0.0.1', port), timeout=2):
+                pass
+        finally:
+            app.stop()
+        assert not app.running() and not app.SYSTEM_ACTIVE
+        app.ensure_listener_available(port, timeout=2)
+print('PASS: three real bundled engine start/stop/restart cycles on the same port.')
+""")
         p = subprocess.Popen([str(python), "-E", "-s", "-B", str(resources / "app.py")], env=env, cwd=resources, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             import select

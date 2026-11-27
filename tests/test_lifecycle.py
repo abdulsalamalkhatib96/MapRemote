@@ -1,4 +1,4 @@
-import importlib, io, os, tempfile, unittest
+import importlib, io, os, socket, tempfile, unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -21,6 +21,32 @@ class LifecycleTest(unittest.TestCase):
         with patch.object(self.app,'engine',return_value='/fake/mitmdump'),patch.object(self.app.socket,'socket'),patch.object(self.app.socket,'create_connection'),patch.object(self.app.subprocess,'Popen',return_value=p),patch.object(self.app.sp,'enable') as enable,patch.object(self.app.sp,'wait_restore',return_value=True) as restore:
             self.app.start(); enable.assert_called_once_with(1234,self.app.CONFIG['port']); self.assertTrue(self.app.SYSTEM_ACTIVE)
             self.app.stop(); p.terminate.assert_called_once(); restore.assert_called_once(); self.assertFalse(self.app.SYSTEM_ACTIVE)
+    def test_reusable_port_after_closed_connection(self):
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            server.bind(('127.0.0.1',0))
+            server.listen()
+            port=server.getsockname()[1]
+            with socket.create_connection(('127.0.0.1',port)) as client:
+                accepted,_=server.accept()
+                with accepted:
+                    accepted.shutdown(socket.SHUT_WR)
+                    self.assertEqual(client.recv(1), b'')
+                    client.shutdown(socket.SHUT_WR)
+                    self.assertEqual(accepted.recv(1), b'')
+        self.app.ensure_listener_available(port,timeout=0)
+
+    def test_real_listener_is_not_overwritten(self):
+        with socket.socket() as server:
+            server.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            server.bind(('127.0.0.1',0)); server.listen()
+            port=server.getsockname()[1]
+            with self.assertRaisesRegex(ValueError,'occupied by another listener'):
+                self.app.ensure_listener_available(port,timeout=0)
+            with socket.create_connection(('127.0.0.1',port)):
+                accepted,_=server.accept()
+                accepted.close()
+
     def test_engine_startup_error_is_reported_without_system_proxy(self):
         p=self.fake(); p.poll.return_value=1
         p.stdout=io.BytesIO(b'Addon error: regression sentinel\n')

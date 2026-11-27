@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Fix false port-in-use errors after Stop by checking a reusable TCP listener and briefly retrying transient bind conflicts.
+- Stop orphaned bundled engines when their controller exits unexpectedly; serialize controller cleanup with Start/Stop.
+- Verify repeated real bundled engine restart on the same port and distinguish a genuine competing listener from TIME_WAIT.
 - Adopt stale matching loopback proxy settings automatically and disable them on Stop instead of restoring an abandoned listener.
 - Restore HTTP/HTTPS and other network settings independently; refuse to overwrite unrelated active proxy configurations.
 - Tunnel TLS outside enabled HTTPS mapping authorities without interception or CA trust requirements; reload scope from rules on each new TLS connection.
