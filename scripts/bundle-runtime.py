@@ -4,10 +4,12 @@ import hashlib
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
 import urllib.request
+from bundle_layout import normalize_links
 from pathlib import Path
 
 PBS_TAG = "20261124"
@@ -75,7 +77,15 @@ def main():
                 entry.unlink()
     # Bytecode can contain build paths and is not required at runtime.
     for item in dest.rglob("*.pyc"):
-        item.unlink()
+        if not item.is_symlink():
+            item.unlink()
+    # Drop build-time metadata, never runtime libraries or license notices.
+    for directory in (dest / "include", dest / "lib" / "pkgconfig", dest / "share" / "man"):
+        if directory.is_dir() and not directory.is_symlink():
+            shutil.rmtree(directory)
+    # Apple strict code-sign verification rejects dangling or escaping symlinks.
+    normalize_links(dest)
+    subprocess.run([str(python), "-I", "-B", "-c", "import ssl, sqlite3, mitmproxy; print(ssl.OPENSSL_VERSION)"], env=env, check=True)
     print(f"Bundled Python {PYTHON}, mitmproxy {MITMPROXY} ({arch})")
 
 if __name__ == "__main__":

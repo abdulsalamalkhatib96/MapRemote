@@ -25,6 +25,7 @@ if [[ -n "${MAPREMOTE_NOTARY_PROFILE:-}" ]]; then
   rm "$STAGE/notary.zip"
 fi
 /usr/bin/hdiutil create -ov -volname "MapRemote" -srcfolder "$STAGE" -format UDZO "$OUT"
+/usr/bin/hdiutil verify "$OUT"
 if [[ -n "${MAPREMOTE_SIGN_IDENTITY:-}" && "$MAPREMOTE_SIGN_IDENTITY" != "-" ]]; then
   /usr/bin/codesign --force --timestamp --sign "$MAPREMOTE_SIGN_IDENTITY" "$OUT"
 fi

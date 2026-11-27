@@ -11,7 +11,7 @@ BUILD_PYTHON="${MAPREMOTE_BUILD_PYTHON:-$(command -v python3 || true)}"
 [[ -n "$BUILD_PYTHON" ]] || { echo 'Python 3 is required on the build machine only.'; exit 1; }
 APP="$PWD/MapRemote.app"
 [[ ! -e "$APP" ]] || { echo 'Existing MapRemote.app found. Close it and move it out before rebuilding.'; exit 1; }
-TMP="$(mktemp -d "$PWD/.build.XXXXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/mapremote-build.XXXXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 CONTENTS="$TMP/MapRemote.app/Contents"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
@@ -25,6 +25,7 @@ bash scripts/build-icon.sh "$CONTENTS/Resources/MapRemote.icns"
 cp scripts/mitmdump-launcher.sh "$CONTENTS/Resources/mitmdump"
 chmod 755 "$CONTENTS/Resources/mitmdump"
 "$BUILD_PYTHON" scripts/sign-app.py "$TMP/MapRemote.app"
-mv "$TMP/MapRemote.app" "$APP"
+/usr/bin/ditto "$TMP/MapRemote.app" "$APP"
+/usr/bin/codesign --verify --deep --strict --verbose=4 "$APP"
 if [[ "${MAPREMOTE_BUILD_ONLY:-0}" != 1 ]]; then /usr/bin/open "$APP"; fi
 echo "Standalone MapRemote.app built for $(uname -m)."

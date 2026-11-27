@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from bundle_layout import validate_links
 
 app = Path(sys.argv[1]).resolve()
 identity = os.environ.get("MAPREMOTE_SIGN_IDENTITY") or "-"
@@ -18,6 +19,7 @@ def sign(path):
 
 # Mach-O includes native extension modules, executables and dynamic libraries.
 magics = {bytes.fromhex(x) for x in ("feedface", "cefaedfe", "feedfacf", "cffaedfe", "cafebabe", "bebafeca", "cafebabf", "bfbafeca")}
+validate_links(app)
 bundles = []
 for root, dirs, files in os.walk(app, followlinks=False):
     for name in dirs:
@@ -35,5 +37,7 @@ for root, dirs, files in os.walk(app, followlinks=False):
                     sign(path)
 for path in sorted(bundles, key=lambda p: len(p.parts), reverse=True):
     sign(path)
+    subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "--verbose=4", str(path)], check=True)
+validate_links(app)
 sign(app)
-subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)], check=True)
+subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "--verbose=4", str(app)], check=True)
