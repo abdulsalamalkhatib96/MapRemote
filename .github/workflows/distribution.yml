@@ -82,7 +82,7 @@ jobs:
       - name: Build standalone app
         run: MAPREMOTE_BUILD_ONLY=1 bash Build.command
       - name: Validate relocated app and real proxy traffic
-        run: python scripts/test-bundle.py MapRemote.app
+        run: python scripts/test-bundle.py MapRemote.app --privileged
       - name: Create DMG
         run: bash scripts/package-dmg.sh
       - name: Upload DMG and checksum
@@ -115,16 +115,16 @@ jobs:
           set -euo pipefail
           cd release
           sha256sum -c ./*.sha256
-          test -f MapRemote-3.0-arm64.dmg
-          test -f MapRemote-3.0-x86_64.dmg
+          test -f MapRemote-3.0.1-arm64.dmg
+          test -f MapRemote-3.0.1-x86_64.dmg
           if [[ "$SIGN_REQUESTED" == true ]]; then
-            tag=v3.0
-            title="MapRemote 3.0 — signed and notarized"
+            tag=v3.0.1
+            title="MapRemote 3.0.1 — signed and notarized"
             notes="Standalone DMGs for Apple Silicon and Intel. Both builds passed relocation and HTTP/HTTPS proxy smoke tests. Administrator approval and explicit CA trust remain required."
             flags=()
           else
-            tag="v3.0-preview-${GITHUB_SHA:0:7}"
-            title="MapRemote 3.0 — unsigned preview"
+            tag="v3.0.1-preview-${GITHUB_SHA:0:7}"
+            title="MapRemote 3.0.1 — unsigned preview"
             notes="Standalone DMGs (ad-hoc signed, not Apple-notarized). Both builds passed relocation and HTTP/HTTPS proxy smoke tests. Review source before granting network or CA permissions. Do not disable Gatekeeper."
             flags=(--prerelease)
           fi

@@ -4,7 +4,7 @@ MapRemote 3.0 packages CPython 3.12.16 from the pinned Python Build Standalone r
 
 ## Architecture and releases
 
-The [distribution workflow](../.github/workflows/distribution.yml) uses macOS 15 Apple Silicon and Intel runners. It tests the relocated application under a path containing spaces with a restricted PATH and temporary HOME; checks signatures; exercises real HTTP and HTTPS mapping using a temporary CA; builds a compressed DMG with an Applications symlink; and uploads checksums.
+The [distribution workflow](../.github/workflows/distribution.yml) uses macOS 15 Apple Silicon and Intel runners. It tests the relocated application under a path containing spaces with a restricted PATH and temporary HOME; checks signatures; exercises real HTTP and HTTPS mapping using a temporary CA; builds a compressed DMG with an Applications symlink; and uploads checksums. It also executes the independently signed privileged helper as root in its production staging directory using a non-mutating self-test.
 
 Both jobs must succeed before a preview is published. Pushes to main trigger ad-hoc-signed previews, not notarized releases. The manual workflow can produce a signed release only when all Apple Developer credentials are configured. If a release tag already exists, publishing fails rather than silently replacing assets.
 

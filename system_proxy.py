@@ -5,7 +5,7 @@ from pathlib import Path
 JOURNAL = Path('/private/var/db/com.mapremote.proxy/snapshot.plist')
 
 def helper():
-    path = Path(__file__).resolve().parent / 'ProxyHelper'
+    path = Path(__file__).resolve().parent.parent / 'Helpers' / 'ProxyHelper'
     if sys.platform != 'darwin' or not path.is_file():
         raise ValueError('Build MapRemote.app using Build.command on macOS first.')
     return path
@@ -17,17 +17,39 @@ def admin(command):
         raise ValueError(result.stderr.strip() or 'Administrator authorization failed.')
     return result.stdout.strip()
 
-def startup_command(executable, controller_pid, engine_pid, port):
-    # Stage the authorized executable in a private root-owned directory. This
-    # also avoids launching it directly from Downloads or a movable app bundle.
+def stage_command(executable, verify_signature=True):
+    """Copy the standalone signed tool to a new, private root-owned inode."""
     source = shlex.quote(str(executable))
-    return f'''set -eu
+    stage = f"""set -eu
 umask 077
 cd /
 d=$(/usr/bin/mktemp -d /private/tmp/mapremote.XXXXXXXX)
 trap '/bin/rm -rf "$d"' EXIT
-/usr/bin/install -m 700 {source} "$d/ProxyHelper"
-# macOS nohup may fail to detach from the console inside osascript.
+"""
+    if not verify_signature:
+        # Only for harmless shell fixtures in tests, never a production call.
+        return stage + f'/usr/bin/install -m 700 {source} "$d/ProxyHelper"\n'
+    return stage + f"""if ! /usr/bin/codesign --verify --strict --verbose=2 {source}; then
+  echo 'Bundled ProxyHelper signature is invalid. Reinstall a complete MapRemote release.' >&2
+  exit 1
+fi
+/usr/bin/ditto {source} "$d/ProxyHelper"
+/usr/sbin/chown root:wheel "$d/ProxyHelper"
+/bin/chmod 700 "$d/ProxyHelper"
+/usr/bin/cmp -s {source} "$d/ProxyHelper" || {{ echo 'ProxyHelper copy differs from bundled executable.' >&2; exit 1; }}
+if ! /usr/bin/codesign --verify --strict --verbose=2 "$d/ProxyHelper"; then
+  echo 'Staged ProxyHelper signature is invalid. Network settings were not changed.' >&2
+  exit 1
+fi
+"""
+
+def probe_command(executable):
+    return stage_command(executable) + '"$d/ProxyHelper" self-test'
+
+def startup_command(executable, controller_pid, engine_pid, port, *, verify_signature=True):
+    # Stage the authorized executable in a private root-owned directory. This
+    # also avoids launching it directly from Downloads or a movable app bundle.
+    return stage_command(executable, verify_signature) + f'''# macOS nohup may fail to detach from the console inside osascript.
 # Ignore SIGHUP in the child and redirect all three standard descriptors.
 # exec preserves the PID for readiness diagnostics.
 (
@@ -41,6 +63,9 @@ while [ ! -f "$d/ready" ] && [ "$i" -lt 400 ]; do
     rc=0; wait "$child" || rc=$?
     echo "System proxy helper exited before readiness (status $rc)." >&2
     /bin/cat "$d/helper.log" >&2
+    if [ "$rc" -eq 137 ]; then
+      echo 'Helper received SIGKILL before readiness. Check macOS Console for AMFI, syspolicyd or CODESIGNING reports. Do not disable Gatekeeper or SIP.' >&2
+    fi
     exit 1
   fi
   /bin/sleep 0.1; i=$((i+1))
@@ -62,14 +87,7 @@ def wait_restore(timeout=12):
     return not JOURNAL.exists()
 
 def recover():
-    source = shlex.quote(str(helper()))
-    admin(f'''set -eu
-umask 077
-cd /
-d=$(/usr/bin/mktemp -d /private/tmp/mapremote.XXXXXXXX)
-trap '/bin/rm -rf "$d"' EXIT
-/usr/bin/install -m 700 {source} "$d/ProxyHelper"
-"$d/ProxyHelper" recover''')
+    admin(stage_command(helper()) + '"$d/ProxyHelper" recover')
 
 def _security(args):
     result = subprocess.run(['/usr/bin/security', *args], capture_output=True, text=True)

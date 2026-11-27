@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.0.1
+- Independently sign the native privileged helper before embedding it in Contents/Helpers.
+- Verify the helper before and after copying to a fresh root-owned staging directory; report signature and SIGKILL diagnostics.
+- Require a real root-level staged helper execution test in distribution CI, without changing host network settings.
+
 ## 3.0
 - Bundle a relocatable CPython runtime and mitmproxy engine in the macOS application; remove runtime dependency on Homebrew.
 - Add native arm64 and x86_64 distribution builds, DMG packaging, SHA-256 checksums and release automation.

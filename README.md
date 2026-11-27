@@ -5,7 +5,7 @@
   <p>A focused macOS development proxy for mapping remote HTTP and HTTPS endpoints to local or alternative backends.</p>
   <p>
     <a href="https://github.com/abdulsalamalkhatib96/MapRemote/actions/workflows/ci.yml"><img src="https://github.com/abdulsalamalkhatib96/MapRemote/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
-    <img src="https://img.shields.io/badge/version-3.0-0F9F9A" alt="Version 3.0" />
+    <img src="https://img.shields.io/badge/version-3.0.1-0F9F9A" alt="Version 3.0.1" />
     <img src="https://img.shields.io/badge/macOS-12%2B-222222?logo=apple" alt="macOS 12+ target" />
     <img src="https://img.shields.io/badge/Swift-AppKit-F05138?logo=swift&logoColor=white" alt="Swift" />
     <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white" alt="Python" />
@@ -52,8 +52,8 @@ Open the [Releases page](https://github.com/abdulsalamalkhatib96/MapRemote/relea
 
 | Mac | File |
 | --- | --- |
-| Apple Silicon (M-series) | `MapRemote-3.0-arm64.dmg` |
-| Intel | `MapRemote-3.0-x86_64.dmg` |
+| Apple Silicon (M-series) | `MapRemote-3.0.1-arm64.dmg` |
+| Intel | `MapRemote-3.0.1-x86_64.dmg` |
 
 Mount the disk image, drag MapRemote to Applications, eject the disk image, and open the application. The distribution contains its own relocatable CPython 3.12 and mitmproxy 12.3.1. No Homebrew, Terminal, system Python or separate mitmproxy installation is needed on the destination Mac. The two architectures are built natively, not a single universal binary. macOS 12 is the deployment target; automated native builds run on macOS 15 and earlier systems still require compatibility verification.
 
@@ -154,6 +154,7 @@ The smoke tests use a temporary CA, temporary rules and a loopback server withou
 | `mitmdump` not found | Reinstall MapRemote from a complete DMG. Developers running source code can install mitmproxy separately. |
 | Proxy exits during startup | Read the engine diagnostics in the UI. Source developers can run the bundled relocation test. |
 | Addon collision or `Loader` error | Quit the old app and rebuild from current source; the app embeds its own addon. |
+| Helper killed before readiness (status 137) | Install 3.0.1 or later; if it persists inspect Console for CODESIGNING/AMFI reports. Do not disable Gatekeeper or SIP. |
 | `nohup: can't detach from console` | Rebuild using 2.5 or later; this version no longer uses nohup. |
 | Certificate authorization denied | Use Keychain Access to inspect the exact generated public CA certificate and approve trust interactively. |
 | Internet stops working | Use Recover network settings, then verify Network > Details > Proxies; do not remove the journal. |

@@ -8,10 +8,24 @@ class HelperStartupTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); executable=root/'fake helper'
             executable.write_text('#!/bin/sh\n'+script+'\n'); executable.chmod(0o700)
-            command=sp.startup_command(executable,os.getpid(),os.getpid(),9090)
+            command=sp.startup_command(executable,os.getpid(),os.getpid(),9090,verify_signature=False)
             # The macOS script is exercised against a harmless fake helper, never real network settings.
             command=command.replace('/private/tmp/mapremote.XXXXXXXX',str(root/'mapremote.XXXXXXXX'))
             return subprocess.run(['/bin/sh','-c',command],capture_output=True,text=True,timeout=5)
+    def test_production_stage_verifies_both_copies(self):
+        cmd=sp.startup_command(Path('/a b/ProxyHelper'),1,2,9090)
+        self.assertEqual(cmd.count('/usr/bin/codesign --verify --strict'),2)
+        self.assertIn('/usr/bin/ditto',cmd)
+        self.assertIn('/usr/bin/cmp -s',cmd)
+        self.assertIn('SIGKILL',cmd)
+        self.assertNotIn('xattr',cmd)
+        self.assertNotIn('codesign --sign',cmd)
+
+    def test_probe_uses_identical_staging(self):
+        cmd=sp.probe_command(Path('/a b/ProxyHelper'))
+        self.assertTrue(cmd.endswith('"$d/ProxyHelper" self-test'))
+        self.assertTrue(cmd.startswith(sp.stage_command(Path('/a b/ProxyHelper'))))
+
     def test_success(self):
         result=self.run_helper('printf OK > "$5"; sleep 0.3')
         self.assertEqual(result.returncode,0,result.stderr)
@@ -29,7 +43,7 @@ class HelperStartupTest(unittest.TestCase):
     def test_timeout_diagnostics(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory); executable=root/'fake'; executable.write_text('#!/bin/sh\necho "locking preferences" >&2\nsleep 1\n'); executable.chmod(0o700)
-            cmd=sp.startup_command(executable,1,2,9090).replace('/private/tmp/mapremote.XXXXXXXX',str(root/'mapremote.XXXXXXXX')).replace('-lt 400','-lt 2')
+            cmd=sp.startup_command(executable,1,2,9090,verify_signature=False).replace('/private/tmp/mapremote.XXXXXXXX',str(root/'mapremote.XXXXXXXX')).replace('-lt 400','-lt 2')
             result=subprocess.run(['/bin/sh','-c',cmd],capture_output=True,text=True,timeout=4)
             self.assertNotEqual(result.returncode,0)
             self.assertIn('locking preferences',result.stderr)
@@ -49,7 +63,7 @@ class HelperStartupTest(unittest.TestCase):
             marker = root / 'finished'
             executable.write_text('#!/bin/sh\nprintf OK > "$5"\nsleep 0.7\nprintf survived > ' + shlex.quote(str(marker)) + '\n')
             executable.chmod(0o700)
-            cmd = sp.startup_command(executable, os.getpid(), os.getpid(), 9090)
+            cmd = sp.startup_command(executable, os.getpid(), os.getpid(), 9090, verify_signature=False)
             cmd = cmd.replace('/private/tmp/mapremote.XXXXXXXX', str(root / 'mapremote.XXXXXXXX'))
             result = subprocess.run(['/bin/sh', '-c', cmd], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5, start_new_session=True)
             self.assertEqual(result.returncode, 0, result.stderr)

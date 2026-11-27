@@ -15,6 +15,20 @@ def main():
         subprocess.run(["/usr/bin/ditto", str(app), str(copied)], check=True)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", str(copied)], check=True)
         resources = copied / "Contents" / "Resources"
+        helper = copied / "Contents" / "Helpers" / "ProxyHelper"
+        subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(helper)], check=True)
+        extracted = root / "ExtractedProxyHelper"
+        subprocess.run(["/usr/bin/ditto", str(helper), str(extracted)], check=True)
+        subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(extracted)], check=True)
+        if "--privileged" in sys.argv[2:]:
+            sys.dont_write_bytecode = True
+            sys.path.insert(0, str(resources))
+            from system_proxy import probe_command
+            result = subprocess.run(["/usr/bin/sudo", "-n", "/bin/sh", "-c", probe_command(helper)], capture_output=True, text=True, timeout=30)
+            if result.returncode or result.stdout.strip() != "MapRemote ProxyHelper OK":
+                raise RuntimeError(f"Privileged staged helper failed: {result.returncode}\n{result.stdout}\n{result.stderr}")
+            print("PASS: independently signed ProxyHelper executes as root in its production staging directory.")
+
         python = resources / "runtime" / "bin" / "python3"
         engine = resources / "mitmdump"
         home = root / "home"

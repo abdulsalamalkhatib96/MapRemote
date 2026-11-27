@@ -34,7 +34,10 @@ for root, dirs, files in os.walk(app, followlinks=False):
             if stream.read(4) in magics:
                 # Avoid treating Java class files as fat Mach-O.
                 if "Mach-O" in subprocess.check_output(["/usr/bin/file", "-b", str(path)], text=True):
-                    sign(path)
+                    if path == app / "Contents" / "Helpers" / "ProxyHelper":
+                        subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(path)], check=True)
+                    else:
+                        sign(path)
 for path in sorted(bundles, key=lambda p: len(p.parts), reverse=True):
     sign(path)
     subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "--verbose=4", str(path)], check=True)

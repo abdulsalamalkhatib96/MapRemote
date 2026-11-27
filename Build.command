@@ -14,9 +14,18 @@ APP="$PWD/MapRemote.app"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/mapremote-build.XXXXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 CONTENTS="$TMP/MapRemote.app/Contents"
-mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
+mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources" "$CONTENTS/Helpers"
 export MACOSX_DEPLOYMENT_TARGET=12.0
-/usr/bin/xcrun swiftc -swift-version 5 -O -framework SystemConfiguration ProxyHelper.swift -o "$CONTENTS/Resources/ProxyHelper"
+# Sign outside the enclosing app for an independently executable tool.
+/usr/bin/xcrun swiftc -swift-version 5 -O -framework SystemConfiguration ProxyHelper.swift -o "$TMP/ProxyHelper"
+SIGN_ID="${MAPREMOTE_SIGN_IDENTITY:--}"
+if [[ "$SIGN_ID" == "-" ]]; then
+  /usr/bin/codesign --force --sign - --timestamp=none --identifier com.mapremote.proxyhelper "$TMP/ProxyHelper"
+else
+  /usr/bin/codesign --force --sign "$SIGN_ID" --timestamp --options runtime --identifier com.mapremote.proxyhelper "$TMP/ProxyHelper"
+fi
+/usr/bin/codesign --verify --strict --verbose=2 "$TMP/ProxyHelper"
+/usr/bin/ditto "$TMP/ProxyHelper" "$CONTENTS/Helpers/ProxyHelper"
 /usr/bin/xcrun swiftc -swift-version 5 -O -framework AppKit -framework WebKit NativeApp.swift -o "$CONTENTS/MacOS/MapRemote"
 cp app.py addon.py rules.py system_proxy.py index.html engine_entry.py smoke_test.py "$CONTENTS/Resources/"
 cp Info.plist "$CONTENTS/Info.plist"

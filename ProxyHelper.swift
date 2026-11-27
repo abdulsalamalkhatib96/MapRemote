@@ -108,6 +108,11 @@ var lockFD: Int32 = -1
 do {
     phase("Helper started")
     guard geteuid() == 0 else { throw Failure("Administrator permission required") }
+    // Exercise the actual signed executable without changing network settings.
+    if args.count == 2 && args[1] == "self-test" {
+        print("MapRemote ProxyHelper OK")
+        exit(0)
+    }
     try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
     guard chmod(base.path, 0o755) == 0 else { throw Failure("Cannot set recovery directory permissions") }
     lockFD = open(base.appendingPathComponent("lock").path, O_CREAT | O_RDWR | O_NOFOLLOW, 0o600)
