@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Build a relocatable CPython + mitmproxy runtime on the target Mac."""
 import hashlib
-import json
 import os
 import platform
 import shutil
@@ -16,26 +15,17 @@ PBS_TAG = "20261124"
 PYTHON = "3.12.16"
 MITMPROXY = "12.3.1"
 
-def get_json(url):
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": "MapRemote-build"}
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=60) as response:
-        return json.load(response)
+# Pinned SHA-256 digests from the upstream GitHub release asset metadata.
+# No unauthenticated API calls (and no CI credentials) are needed at build time.
+ASSETS = {
+    "arm64": ("aarch64", "431b99a9c2cdd37ad9b06e425be0e520d2dbce0552abe454257abef592fe3634"),
+    "x86_64": ("x86_64", "ccce24cfd3f56f62561d2c9480fcc567ca3a9bac68450cd73e11aeb631befa1f"),
+}
 
 def asset_for(arch):
-    triple = {"arm64": "aarch64", "x86_64": "x86_64"}[arch]
-    name = f"cpython-{PYTHON}+{PBS_TAG}-{triple}-apple-darwin-install_only.tar.gz"
-    release = get_json(f"https://api.github.com/repos/astral-sh/python-build-standalone/releases/tags/{PBS_TAG}")
-    for page in range(1, 21):
-        assets = get_json(f"{release['assets_url']}?per_page=100&page={page}")
-        for asset in assets:
-            if asset["name"] == name:
-                digest = asset.get("digest", "")
-                if not digest or not digest.startswith("sha256:"):
-                    raise RuntimeError("Upstream asset has no SHA-256 digest")
-                return asset["browser_download_url"], digest.split(":", 1)[1]
-        if len(assets) < 100:
-            break
-    raise RuntimeError(f"Missing pinned runtime asset: {name}")
+    triple, digest = ASSETS[arch]
+    name = f"cpython-{PYTHON}%2B{PBS_TAG}-{triple}-apple-darwin-install_only.tar.gz"
+    return f"https://github.com/astral-sh/python-build-standalone/releases/download/{PBS_TAG}/{name}", digest
 
 def main():
     if sys.platform != "darwin":
